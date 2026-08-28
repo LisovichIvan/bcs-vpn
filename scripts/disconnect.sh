@@ -99,7 +99,6 @@ if [[ ! "$openconnect_process_id" =~ ^[0-9]+$ ]]; then
   fi
   rm -f "$OPENCONNECT_PROCESS_ID_FILE"
   rm -f "$OPENCONNECT_START_TIME_FILE"
-  stop_ocproxy
   rm -f "$OCPROXY_PROCESS_ID_FILE" "$OCPROXY_START_TIME_FILE"
   cleanup_temporary_files
   echo "Повреждённый файл процесса удалён; VPN остановлен."

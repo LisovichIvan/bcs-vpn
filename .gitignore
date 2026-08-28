@@ -2,6 +2,9 @@
 .env
 .env.*
 !.env.example
+vpn-settings.plist
+.vpn-settings.plist.*
+__pycache__/
 *.dmg
 bin/
 run/

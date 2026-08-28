@@ -50,7 +50,8 @@ Proxifier -> SOCKS5 127.0.0.1:8889
 - Прямой трафик Mac не проходит через VPN.
 - PIN, RSA-код и приватный ключ не хранятся в переменных процессов.
 - Временные файлы создаются с правами `600` и удаляются после подключения.
-- `.env` и временные `.env.*` исключены из Git.
+- `vpn-settings.plist`, старый `.env` и временные файлы настроек исключены из Git.
+- Из Keychain экспортируется только identity выбранного сертификата.
 - Автоматические повторные попытки входа запрещены.
 
 Изоляция относится к сети. OpenConnect имеет обычный пользовательский доступ к
@@ -66,6 +67,8 @@ Proxifier -> SOCKS5 127.0.0.1:8889
   fallback-прокси.
 
 Homebrew, Docker, Cisco Secure Client и системные расширения не требуются.
+Python не используется приложением и скриптами подключения; он нужен только
+для тестовых помощников.
 При установке меню runtime копируется из проекта в
 `~/Library/Application Support/BCS VPN/runtime-macos-arm64`. Это позволяет
 дочерним VPN-процессам работать без ограничений доступа macOS к `Documents`.
@@ -92,8 +95,8 @@ RSA SecurID.
 1. Создайте локальную конфигурацию:
 
    ```bash
-   cp .env.example .env
-   chmod 600 .env
+   cp vpn-settings.example.plist vpn-settings.plist
+   chmod 600 vpn-settings.plist
    ```
 
 2. Заполните параметры подключения по разделу [Настройка](#настройка).
@@ -122,18 +125,27 @@ RSA SecurID.
 
 ## Настройка
 
-Создайте `.env` из `.env.example` и заполните параметры:
+Создайте `vpn-settings.plist` из примера и заполните параметры через пункт меню
+`Настройки и журналы…` либо в Property List:
 
-```dotenv
-OPENCONNECT_URL=https://fw2.bcs.ru
-OPENCONNECT_USER=your-login
-OPENCONNECT_RSA_PIN=your-permanent-pin
-OPENCONNECT_CERTIFICATE_SHA1=CLIENT_CERTIFICATE_SHA1
-OPENCONNECT_SERVER_CERTIFICATE_PIN=pin-sha256:SERVER_PUBLIC_KEY_SHA256
+```xml
+<key>serverURL</key>
+<string>https://fw2.bcs.ru</string>
+<key>username</key>
+<string>your-login</string>
+<key>rsaPIN</key>
+<string>your-permanent-pin</string>
+<key>certificateSHA1</key>
+<string>CLIENT_CERTIFICATE_SHA1</string>
+<key>serverCertificatePin</key>
+<string>pin-sha256:SERVER_PUBLIC_KEY_SHA256</string>
 ```
 
-Скрипт подключения запрещает символические ссылки и устанавливает для `.env`
-права `600` перед чтением.
+Файл должен принадлежать текущему пользователю, иметь права `600` и не быть
+символической ссылкой. Старый `.env` автоматически и без исполнения shell-кода
+мигрирует в `vpn-settings.plist` при первом чтении. Для старого адреса шлюза без
+схемы автоматически добавляется `https://`. После проверки подключения старый
+файл можно удалить вручную.
 
 SHA-1 клиентского сертификата можно получить командой:
 
@@ -144,7 +156,7 @@ security find-certificate -c "Имя владельца сертификата" 
 Закрепление сертификата шлюза нужно проверить после его перевыпуска. Нельзя
 заменять его отключением проверки TLS.
 
-Сохранить постоянный PIN в локальный `.env` можно командой:
+Сохранить постоянный PIN в локальный Property List можно командой:
 
 ```bash
 ./scripts/set-rsa-pin.sh
@@ -180,10 +192,10 @@ LaunchAgent. Выберите это приложение в прямом пра
 `Настройки` позволяет изменить шлюз, имя пользователя, постоянный PIN RSA,
 SHA-1 клиентского сертификата и закрепление сертификата сервера.
 
-Настройки сохраняются в проектном `.env` с правами `600` и применяются при
-следующем подключении. Неизвестные параметры и комментарии файла сохраняются.
-Символические ссылки вместо `.env` запрещены. PIN скрыт в окне, но по-прежнему
-хранится в локальном `.env`, а не в Keychain.
+Настройки сохраняются в проектном `vpn-settings.plist` с правами `600` и
+применяются при следующем подключении. Символические ссылки, другой владелец и
+групповые или общие права доступа запрещены. PIN скрыт в окне, но по-прежнему
+хранится в локальном Property List, а не в Keychain.
 
 Вкладка `Журналы` показывает один выбранный журнал:
 
@@ -218,10 +230,12 @@ SHA-1 клиентского сертификата и закрепление с
 ./scripts/connect.sh
 ```
 
-Скрипт запрашивает свежий шестизначный код RSA SecurID, экспортирует выбранный
-сертификат из Keychain и запускает OpenConnect. PIN и код объединяются без
-разделителя. Запрос macOS на доступ к Keychain нужно подтвердить паролем Mac или
-Touch ID.
+Скрипт запрашивает свежий шестизначный код RSA SecurID и запускает OpenConnect
+через консольный `bcs-vpn-helper`. Helper читает настройки, сбрасывает сигналы и
+выбирает `SecIdentity` по настроенному SHA-1. Security framework экспортирует
+только выбранный identity в PKCS#12 в памяти, после чего OpenSSL создаёт временный
+PEM для OpenConnect. PIN и код объединяются без разделителя. Запрос macOS на
+доступ к Keychain нужно подтвердить паролем Mac или Touch ID.
 
 Один RSA-код используется только для одной попытки. Журнал подключения:
 
@@ -282,9 +296,10 @@ Fallback на прямое соединение не является kill switc
 истечения тайм-аута NuGet. При активном Cisco VPN системный маршрут до Artifactory
 сохраняется.
 
-Fallback-прокси обслуживает до 512 одновременных клиентских соединений. При
-достижении лимита журнал содержит `client-limit-reached active=<число> limit=512`.
-Тайм-аут простоя relay-соединения остаётся равным одному часу.
+Fallback-прокси обслуживает до 512 одновременных клиентских соединений, используя
+один обработчик с `poll` на соединение. При достижении лимита журнал содержит
+`client-limit-reached active=<число> limit=512`. Тайм-аут простоя relay-соединения
+равен одному часу.
 
 ## Проверка
 
@@ -319,24 +334,26 @@ Fallback-прокси обслуживает до 512 одновременных
 | `./scripts/connect.sh` | Запросить новый код RSA SecurID и подключить VPN |
 | `./scripts/disconnect.sh` | Безопасно остановить OpenConnect и ocproxy |
 | `./scripts/status.sh` | Вывести `connected`, `connecting`, `disconnected`, `failed` или `unavailable` |
-| `./scripts/set-rsa-pin.sh` | Безопасно записать постоянный PIN в локальный `.env` |
+| `./scripts/set-rsa-pin.sh` | Безопасно записать постоянный PIN в локальный Property List |
 | `./scripts/check-vpn.sh [домен]` | Проверить прокси, доступ и сетевую изоляцию |
 | `./scripts/test-fallback-proxy.sh` | Собрать и проверить fallback SOCKS5 |
+| `./scripts/test-vpn-settings.sh` | Проверить Swift-helper: настройки, identity и сигналы |
 | `python3 ./scripts/test-portable-ocproxy.py` | Проверить исходный и установленный ocproxy |
 
 ## Структура проекта
 
 | Путь | Содержимое |
 | --- | --- |
-| `app/` | Исходники приложения строки меню, окна настроек и шаблоны plist |
+| `app/` | Исходники приложения, окна настроек, Swift-helper и шаблоны plist |
 | `fallback-proxy/` | Реализация и тестовые помощники fallback SOCKS5 |
 | `scripts/` | Установка, управление подключением, диагностика и тесты |
 | `vendor/macos-arm64/` | Переносимые OpenConnect, ocproxy, библиотеки, лицензии и контрольные суммы |
 | `run/` | Генерируемые журналы, файлы процессов, снимки сети и сборочные артефакты |
-| `.env.example` | Шаблон локальной конфигурации без секретов |
+| `vpn-settings.example.plist` | Шаблон локальной конфигурации без секретов |
+| `.env.example` | Старый шаблон только для автоматической миграции |
 
-Каталоги `run/`, `bin/`, локальный `.env`, временные варианты `.env.*`, образы
-DMG и файлы `.DS_Store` не входят в репозиторий.
+Каталоги `run/`, `bin/`, локальные `vpn-settings.plist` и `.env`, временные файлы
+настроек, образы DMG и файлы `.DS_Store` не входят в репозиторий.
 
 ## Проверка исходников
 
@@ -350,6 +367,7 @@ swiftc -warnings-as-errors -typecheck \
   app/SettingsWindowController.swift \
   fallback-proxy/FallbackProxyServer.swift
 ./scripts/test-fallback-proxy.sh
+./scripts/test-vpn-settings.sh
 ```
 
 Проверка переносимого ocproxy требует предварительно установленного runtime и
@@ -363,7 +381,7 @@ python3 ./scripts/test-portable-ocproxy.py
 
 1. Скопируйте каталог `bcs-vpn` целиком.
 2. Импортируйте клиентский сертификат в Keychain нового Mac.
-3. Создайте локальный `.env`; не передавайте существующий файл через Git.
+3. Создайте локальный `vpn-settings.plist`; не передавайте существующий файл через Git.
 4. Запустите `./scripts/install-app.sh --prepare`.
 5. Выберите `BCS VPN.app` в прямом правиле Proxifier.
 6. Запустите `./scripts/install-app.sh --activate`.

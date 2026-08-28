@@ -15,9 +15,8 @@ OCPROXY_START_TIME_FILE="$RUN_DIRECTORY/ocproxy.start-time"
 OPENCONNECT_LOG_FILE="$RUN_DIRECTORY/openconnect.log"
 OCPROXY_LOG_FILE="$RUN_DIRECTORY/ocproxy.log"
 LIFECYCLE_LOCK_FILE="$INSTALLATION_DIRECTORY/lifecycle.lock"
-KEYCHAIN_CERTIFICATE_FILE="$RUN_DIRECTORY/keychain-client.p12"
+VPN_COMMAND_HELPER="$HOME/Applications/BCS VPN.app/Contents/MacOS/bcs-vpn-helper"
 IDENTITY_PEM_FILE="$RUN_DIRECTORY/client-identity.pem"
-SELECTED_IDENTITY_PEM_FILE="$RUN_DIRECTORY/selected-client-identity.pem"
 CERTIFICATE_PASSWORD_FILE="$RUN_DIRECTORY/certificate-password"
 VPN_PASSCODE_FILE="$RUN_DIRECTORY/vpn-passcode"
 
@@ -116,12 +115,9 @@ cleanup() {
   trap - EXIT INT TERM
   if [[ "$exit_status" -ne 0 && "$openconnect_started" == true ]]; then
     stop_started_openconnect
-    stop_ocproxy
   fi
   rm -f \
-    "$KEYCHAIN_CERTIFICATE_FILE" \
     "$IDENTITY_PEM_FILE" \
-    "$SELECTED_IDENTITY_PEM_FILE" \
     "$CERTIFICATE_PASSWORD_FILE" \
     "$VPN_PASSCODE_FILE" \
     "$LIFECYCLE_LOCK_FILE"
@@ -136,8 +132,10 @@ if [[ "$(uname -m)" != "arm64" ]]; then
   exit 1
 fi
 
-if [[ ! -x "$OPENCONNECT_EXECUTABLE" || ! -x "$RUNTIME_DIRECTORY/bin/ocproxy" ]]; then
+if [[ ! -x "$OPENCONNECT_EXECUTABLE" || ! -x "$RUNTIME_DIRECTORY/bin/ocproxy" || \
+  ! -x "$VPN_COMMAND_HELPER" ]]; then
   echo "Не найден переносимый VPN runtime в $RUNTIME_DIRECTORY." >&2
+  echo "Переустановите BCS VPN.app командой ./scripts/install-app.sh --activate." >&2
   exit 1
 fi
 
@@ -146,26 +144,31 @@ if ! (cd "$RUNTIME_DIRECTORY" && shasum -a 256 -c CHECKSUMS.sha256 >/dev/null); 
   exit 1
 fi
 
-if [[ ! -f .env || -L .env ]]; then
-  echo "Не найден файл $PROJECT_DIRECTORY/.env." >&2
-  echo "Скопируйте .env.example в .env и заполните параметры." >&2
-  exit 1
-fi
-chmod 600 .env
-
-# shellcheck disable=SC1091
 unset OPENCONNECT_URL OPENCONNECT_USER OPENCONNECT_RSA_PIN OPENCONNECT_CERTIFICATE_SHA1 OPENCONNECT_SERVER_CERTIFICATE_PIN
-source .env
-export -n OPENCONNECT_RSA_PIN
+settings_output="$("$VPN_COMMAND_HELPER" read-settings "$PROJECT_DIRECTORY")"
+while IFS=$'\t' read -r setting_key setting_value; do
+  case "$setting_key" in
+    OPENCONNECT_URL) OPENCONNECT_URL="$setting_value" ;;
+    OPENCONNECT_USER) OPENCONNECT_USER="$setting_value" ;;
+    OPENCONNECT_RSA_PIN) OPENCONNECT_RSA_PIN="$setting_value" ;;
+    OPENCONNECT_CERTIFICATE_SHA1) OPENCONNECT_CERTIFICATE_SHA1="$setting_value" ;;
+    OPENCONNECT_SERVER_CERTIFICATE_PIN) OPENCONNECT_SERVER_CERTIFICATE_PIN="$setting_value" ;;
+    *)
+      echo "Получен неизвестный параметр настроек: $setting_key" >&2
+      exit 1
+      ;;
+  esac
+done <<< "$settings_output"
+unset settings_output setting_key setting_value
 
 for required_variable in OPENCONNECT_URL OPENCONNECT_USER OPENCONNECT_RSA_PIN OPENCONNECT_CERTIFICATE_SHA1 OPENCONNECT_SERVER_CERTIFICATE_PIN; do
   if [[ -z "${!required_variable:-}" ]]; then
-    echo "Не задана переменная $required_variable в .env." >&2
+    echo "Не задан параметр $required_variable в vpn-settings.plist." >&2
     exit 1
   fi
 done
 
-current_status="$($SCRIPT_DIRECTORY/status.sh)"
+current_status="$("$SCRIPT_DIRECTORY/status.sh")"
 if [[ "$current_status" == "connected" || "$current_status" == "connecting" ]]; then
   echo "VPN уже запущен, состояние: $current_status."
   exit 0
@@ -204,9 +207,7 @@ if [[ ! "$rsa_code" =~ ^[0-9]{6}$ ]]; then
 fi
 
 rm -f \
-  "$KEYCHAIN_CERTIFICATE_FILE" \
   "$IDENTITY_PEM_FILE" \
-  "$SELECTED_IDENTITY_PEM_FILE" \
   "$CERTIFICATE_PASSWORD_FILE" \
   "$VPN_PASSCODE_FILE" \
   "$OCPROXY_PROCESS_ID_FILE" \
@@ -216,27 +217,13 @@ rm -f \
 
 certificate_password="$(/usr/bin/openssl rand -hex 24)"
 printf '%s\n' "$certificate_password" > "$CERTIFICATE_PASSWORD_FILE"
-security export \
-  -k "$HOME/Library/Keychains/login.keychain-db" \
-  -t identities \
-  -f pkcs12 \
-  -P "$certificate_password" \
-  -o "$KEYCHAIN_CERTIFICATE_FILE"
-
-/usr/bin/openssl pkcs12 \
-  -in "$KEYCHAIN_CERTIFICATE_FILE" \
-  -passin "file:$CERTIFICATE_PASSWORD_FILE" \
-  -nodes \
-  -out "$IDENTITY_PEM_FILE"
-
-OPENSSL_EXECUTABLE=/usr/bin/openssl python3 "$SCRIPT_DIRECTORY/select-certificate-identity.py" \
-  "$IDENTITY_PEM_FILE" \
+"$VPN_COMMAND_HELPER" export-identity \
   "$OPENCONNECT_CERTIFICATE_SHA1" \
-  "$SELECTED_IDENTITY_PEM_FILE"
-mv "$SELECTED_IDENTITY_PEM_FILE" "$IDENTITY_PEM_FILE"
+  "$IDENTITY_PEM_FILE" \
+  "$CERTIFICATE_PASSWORD_FILE"
 chmod 600 "$IDENTITY_PEM_FILE"
 
-rm -f "$KEYCHAIN_CERTIFICATE_FILE" "$CERTIFICATE_PASSWORD_FILE"
+rm -f "$CERTIFICATE_PASSWORD_FILE"
 printf '%s%s\n' "$OPENCONNECT_RSA_PIN" "$rsa_code" > "$VPN_PASSCODE_FILE"
 unset certificate_password rsa_code OPENCONNECT_RSA_PIN
 
@@ -252,7 +239,8 @@ chmod 600 "$OCPROXY_LOG_FILE"
 
 echo "Запуск OpenConnect в пользовательском режиме. Маршруты и DNS macOS не изменяются."
 trap '' INT TERM
-/usr/bin/nohup /usr/bin/env \
+"$VPN_COMMAND_HELPER" exec-with-default-signals \
+  /usr/bin/nohup /usr/bin/env \
   -u http_proxy \
   -u https_proxy \
   -u all_proxy \
@@ -275,8 +263,7 @@ trap '' INT TERM
   --reconnect-timeout=86400 \
   --passwd-on-stdin \
   "$OPENCONNECT_URL" \
-  < "$VPN_PASSCODE_FILE" \
-  >> "$OPENCONNECT_LOG_FILE" 2>&1 &
+  < "$VPN_PASSCODE_FILE" >> "$OPENCONNECT_LOG_FILE" 2>&1 &
 openconnect_process_id=$!
 openconnect_started=true
 trap 'exit 130' INT
@@ -294,7 +281,7 @@ fi
 printf '%s\n' "$openconnect_start_time" > "$OPENCONNECT_START_TIME_FILE"
 
 for _ in $(seq 1 60); do
-  if [[ "$($SCRIPT_DIRECTORY/status.sh)" == "connected" ]]; then
+  if [[ "$("$SCRIPT_DIRECTORY/status.sh")" == "connected" ]]; then
     openconnect_started=false
     echo "VPN подключён, SOCKS5 доступен на 127.0.0.1:8890."
     exit 0

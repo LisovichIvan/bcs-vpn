@@ -1,7 +1,7 @@
 import Darwin
 import Foundation
 
-struct VPNSettings {
+struct VPNSettings: Codable, Equatable {
     let serverURL: String
     let username: String
     let rsaPIN: String
@@ -39,9 +39,13 @@ struct VPNSettings {
             throw VPNSettingsStoreError.invalidSetting("Заполните все поля.")
         }
         guard values.allSatisfy({ value in
-            !value.unicodeScalars.contains(where: { $0.value == 0 || $0.value == 10 || $0.value == 13 })
+            !value.unicodeScalars.contains(where: { scalar in
+                scalar.value < 32 || scalar.value == 127
+            })
         }) else {
-            throw VPNSettingsStoreError.invalidSetting("Значения не должны содержать переносы строк.")
+            throw VPNSettingsStoreError.invalidSetting(
+                "Значения не должны содержать управляющие символы."
+            )
         }
 
         let serverURLComponents = URLComponents(string: normalizedSettings.serverURL)
@@ -64,14 +68,16 @@ struct VPNSettings {
                 "SHA-1 сертификата должен содержать 40 шестнадцатеричных символов."
             )
         }
+
         let serverCertificatePinPrefix = "pin-sha256:"
-        let serverCertificateDigest = normalizedSettings.serverCertificatePin
-            .dropFirst(serverCertificatePinPrefix.count)
+        let serverCertificateDigest = String(
+            normalizedSettings.serverCertificatePin.dropFirst(serverCertificatePinPrefix.count)
+        )
         guard normalizedSettings.serverCertificatePin.hasPrefix(serverCertificatePinPrefix),
-              !serverCertificateDigest.isEmpty,
-              !serverCertificateDigest.contains(where: { $0.isWhitespace }) else {
+              let decodedDigest = Data(base64Encoded: serverCertificateDigest),
+              decodedDigest.count == 32 else {
             throw VPNSettingsStoreError.invalidSetting(
-                "Закрепление сертификата сервера должно начинаться с pin-sha256:."
+                "Закрепление сертификата сервера должно содержать полный SHA-256 в Base64."
             )
         }
 
@@ -81,67 +87,153 @@ struct VPNSettings {
 
 enum VPNSettingsStoreError: LocalizedError {
     case invalidSetting(String)
-    case unsafeConfigurationFile
-    case unsupportedConfigurationFile
-    case invalidConfigurationValue(String)
+    case unsafeConfigurationFile(String)
+    case invalidConfigurationFile(String)
     case fileOperationFailed(String)
 
     var errorDescription: String? {
         switch self {
         case let .invalidSetting(message):
             return message
-        case .unsafeConfigurationFile:
-            return "Файл .env не должен быть символической ссылкой."
-        case .unsupportedConfigurationFile:
-            return "Путь .env должен указывать на обычный файл."
-        case let .invalidConfigurationValue(key):
-            return "Не удалось прочитать значение \(key) из .env."
+        case let .unsafeConfigurationFile(fileName):
+            return "Файл \(fileName) должен быть обычным файлом текущего пользователя с правами 600."
+        case let .invalidConfigurationFile(fileName):
+            return "Не удалось прочитать настройки из \(fileName)."
         case let .fileOperationFailed(details):
-            return "Не удалось сохранить .env: \(details)"
+            return "Не удалось сохранить настройки: \(details)"
         }
     }
 }
 
 final class VPNSettingsStore {
-    private static let settingKeys = [
-        "OPENCONNECT_URL",
-        "OPENCONNECT_USER",
-        "OPENCONNECT_RSA_PIN",
-        "OPENCONNECT_CERTIFICATE_SHA1",
-        "OPENCONNECT_SERVER_CERTIFICATE_PIN",
-    ]
-
     let configurationFileURL: URL
+    private let legacyConfigurationFileURL: URL
 
     init(projectDirectory: URL) {
-        configurationFileURL = projectDirectory.appendingPathComponent(".env", isDirectory: false)
+        configurationFileURL = projectDirectory.appendingPathComponent(
+            "vpn-settings.plist",
+            isDirectory: false
+        )
+        legacyConfigurationFileURL = projectDirectory.appendingPathComponent(
+            ".env",
+            isDirectory: false
+        )
     }
 
     func load() throws -> VPNSettings {
-        let configurationFileExists = try verifyConfigurationFileSafety()
-        guard configurationFileExists else {
+        if let configurationData = try readSecureFile(at: configurationFileURL) {
+            return try decodePropertyList(configurationData)
+        }
+        guard let legacyData = try readSecureFile(at: legacyConfigurationFileURL) else {
             return .empty
         }
 
-        let content = try String(contentsOf: configurationFileURL, encoding: .utf8)
+        let migratedSettings = try decodeLegacyConfiguration(legacyData).validated()
+        _ = try save(migratedSettings)
+        return migratedSettings
+    }
+
+    func save(_ settings: VPNSettings) throws -> VPNSettings {
+        let normalizedSettings = try settings.validated()
+        _ = try readSecureFile(at: configurationFileURL)
+
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .xml
+        let configurationData: Data
+        do {
+            configurationData = try encoder.encode(normalizedSettings)
+        } catch {
+            throw VPNSettingsStoreError.fileOperationFailed(error.localizedDescription)
+        }
+        try replaceConfigurationFile(with: configurationData)
+        return normalizedSettings
+    }
+
+    private func decodePropertyList(_ data: Data) throws -> VPNSettings {
+        do {
+            return try PropertyListDecoder().decode(VPNSettings.self, from: data).validated()
+        } catch let error as VPNSettingsStoreError {
+            throw error
+        } catch {
+            throw VPNSettingsStoreError.invalidConfigurationFile(
+                configurationFileURL.lastPathComponent
+            )
+        }
+    }
+
+    private func readSecureFile(at fileURL: URL) throws -> Data? {
+        let fileDescriptor = fileURL.path.withCString {
+            Darwin.open($0, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        }
+        if fileDescriptor < 0 {
+            if errno == ENOENT {
+                return nil
+            }
+            throw VPNSettingsStoreError.unsafeConfigurationFile(fileURL.lastPathComponent)
+        }
+
+        var fileInformation = stat()
+        guard fstat(fileDescriptor, &fileInformation) == 0,
+              fileInformation.st_mode & S_IFMT == S_IFREG,
+              fileInformation.st_uid == geteuid(),
+              fileInformation.st_mode & mode_t(0o077) == 0 else {
+            Darwin.close(fileDescriptor)
+            throw VPNSettingsStoreError.unsafeConfigurationFile(fileURL.lastPathComponent)
+        }
+
+        let fileHandle = FileHandle(fileDescriptor: fileDescriptor, closeOnDealloc: true)
+        do {
+            return try fileHandle.readToEnd() ?? Data()
+        } catch {
+            throw VPNSettingsStoreError.invalidConfigurationFile(fileURL.lastPathComponent)
+        }
+    }
+
+    private func decodeLegacyConfiguration(_ data: Data) throws -> VPNSettings {
+        guard let content = String(data: data, encoding: .utf8) else {
+            throw VPNSettingsStoreError.invalidConfigurationFile(
+                legacyConfigurationFileURL.lastPathComponent
+            )
+        }
+
+        let settingKeys = Set([
+            "OPENCONNECT_URL",
+            "OPENCONNECT_USER",
+            "OPENCONNECT_RSA_PIN",
+            "OPENCONNECT_CERTIFICATE_SHA1",
+            "OPENCONNECT_SERVER_CERTIFICATE_PIN",
+        ])
         var valuesByKey: [String: String] = [:]
         for line in content.components(separatedBy: .newlines) {
-            guard let key = assignmentKey(in: line), Self.settingKeys.contains(key) else {
+            var assignment = line.trimmingCharacters(in: .whitespaces)
+            guard !assignment.isEmpty, !assignment.hasPrefix("#") else {
                 continue
             }
-            guard let assignmentSeparator = line.firstIndex(of: "=") else {
+            if assignment.hasPrefix("export ") {
+                assignment = String(assignment.dropFirst("export ".count))
+            }
+            guard let separatorIndex = assignment.firstIndex(of: "=") else {
                 continue
             }
-            let rawValue = String(line[line.index(after: assignmentSeparator)...])
-            guard let valueAndComment = splitShellValueAndComment(rawValue),
-                  let value = decodeShellValue(valueAndComment.value) else {
-                throw VPNSettingsStoreError.invalidConfigurationValue(key)
+            let key = assignment[..<separatorIndex].trimmingCharacters(in: .whitespaces)
+            guard settingKeys.contains(key) else {
+                continue
+            }
+            let rawValue = String(assignment[assignment.index(after: separatorIndex)...])
+            guard let value = decodeLegacyShellValue(rawValue) else {
+                throw VPNSettingsStoreError.invalidConfigurationFile(
+                    legacyConfigurationFileURL.lastPathComponent
+                )
             }
             valuesByKey[key] = value
         }
 
+        let legacyServerURL = valuesByKey["OPENCONNECT_URL", default: ""]
+        let migratedServerURL = legacyServerURL.contains("://")
+            ? legacyServerURL
+            : "https://\(legacyServerURL)"
         return VPNSettings(
-            serverURL: valuesByKey["OPENCONNECT_URL", default: ""],
+            serverURL: migratedServerURL,
             username: valuesByKey["OPENCONNECT_USER", default: ""],
             rsaPIN: valuesByKey["OPENCONNECT_RSA_PIN", default: ""],
             certificateSHA1: valuesByKey["OPENCONNECT_CERTIFICATE_SHA1", default: ""],
@@ -149,95 +241,7 @@ final class VPNSettingsStore {
         )
     }
 
-    func save(_ settings: VPNSettings) throws -> VPNSettings {
-        let normalizedSettings = try settings.validated()
-        let configurationFileExists = try verifyConfigurationFileSafety()
-        let currentContent = configurationFileExists
-            ? try String(contentsOf: configurationFileURL, encoding: .utf8)
-            : ""
-        let valuesByKey = [
-            "OPENCONNECT_URL": normalizedSettings.serverURL,
-            "OPENCONNECT_USER": normalizedSettings.username,
-            "OPENCONNECT_RSA_PIN": normalizedSettings.rsaPIN,
-            "OPENCONNECT_CERTIFICATE_SHA1": normalizedSettings.certificateSHA1,
-            "OPENCONNECT_SERVER_CERTIFICATE_PIN": normalizedSettings.serverCertificatePin,
-        ]
-
-        var outputLines: [String] = []
-        var replacedKeys = Set<String>()
-        var currentLines = currentContent.components(separatedBy: .newlines)
-        while currentLines.last == "" {
-            currentLines.removeLast()
-        }
-        for line in currentLines {
-            guard let key = assignmentKey(in: line), Self.settingKeys.contains(key) else {
-                outputLines.append(line)
-                continue
-            }
-            guard !replacedKeys.contains(key), let value = valuesByKey[key] else {
-                continue
-            }
-            guard let assignmentSeparator = line.firstIndex(of: "="),
-                  let valueAndComment = splitShellValueAndComment(
-                      String(line[line.index(after: assignmentSeparator)...])
-                  ) else {
-                throw VPNSettingsStoreError.invalidConfigurationValue(key)
-            }
-            outputLines.append(
-                "\(key)=\(encodeShellValue(value))\(valueAndComment.commentSuffix)"
-            )
-            replacedKeys.insert(key)
-        }
-        for key in Self.settingKeys where !replacedKeys.contains(key) {
-            outputLines.append("\(key)=\(encodeShellValue(valuesByKey[key, default: ""]))")
-        }
-
-        let updatedContent = outputLines.joined(separator: "\n") + "\n"
-        try replaceConfigurationFile(with: Data(updatedContent.utf8))
-        return normalizedSettings
-    }
-
-    private func verifyConfigurationFileSafety() throws -> Bool {
-        var fileInformation = stat()
-        let result = configurationFileURL.path.withCString {
-            lstat($0, &fileInformation)
-        }
-        if result == 0 {
-            let fileType = fileInformation.st_mode & S_IFMT
-            if fileType == S_IFLNK {
-                throw VPNSettingsStoreError.unsafeConfigurationFile
-            }
-            guard fileType == S_IFREG else {
-                throw VPNSettingsStoreError.unsupportedConfigurationFile
-            }
-            return true
-        }
-        guard errno == ENOENT else {
-            throw VPNSettingsStoreError.fileOperationFailed(String(cString: strerror(errno)))
-        }
-        return false
-    }
-
-    private func assignmentKey(in line: String) -> String? {
-        var assignment = line.trimmingCharacters(in: .whitespaces)
-        guard !assignment.isEmpty, !assignment.hasPrefix("#") else {
-            return nil
-        }
-        if assignment.hasPrefix("export ") {
-            assignment = String(assignment.dropFirst("export ".count))
-        }
-        guard let assignmentSeparator = assignment.firstIndex(of: "=") else {
-            return nil
-        }
-        let key = assignment[..<assignmentSeparator].trimmingCharacters(in: .whitespaces)
-        return key.isEmpty ? nil : key
-    }
-
-    private func encodeShellValue(_ value: String) -> String {
-        "'" + value.replacingOccurrences(of: "'", with: "'\\''") + "'"
-    }
-
-    private func decodeShellValue(_ rawValue: String) -> String? {
+    private func decodeLegacyShellValue(_ rawValue: String) -> String? {
         enum QuoteState {
             case unquoted
             case singleQuoted
@@ -248,8 +252,6 @@ final class VPNSettingsStore {
         var decodedValue = ""
         var quoteState = QuoteState.unquoted
         var characterIndex = 0
-
-        // Supports plain values and shell quoting emitted by encodeShellValue without executing .env.
         while characterIndex < characters.count {
             let character = characters[characterIndex]
             switch quoteState {
@@ -264,7 +266,14 @@ final class VPNSettingsStore {
                         return nil
                     }
                     decodedValue.append(characters[characterIndex])
-                } else if character == "$" || character == "`" || character.isWhitespace {
+                } else if character.isWhitespace {
+                    let remainder = String(characters[characterIndex...])
+                        .trimmingCharacters(in: .whitespaces)
+                    guard remainder.isEmpty || remainder.hasPrefix("#") else {
+                        return nil
+                    }
+                    return decodedValue
+                } else if character == "$" || character == "`" {
                     return nil
                 } else {
                     decodedValue.append(character)
@@ -299,86 +308,16 @@ final class VPNSettingsStore {
             }
             characterIndex += 1
         }
-
         return quoteState == .unquoted ? decodedValue : nil
-    }
-
-    private func splitShellValueAndComment(
-        _ rawValue: String
-    ) -> (value: String, commentSuffix: String)? {
-        enum QuoteState {
-            case unquoted
-            case singleQuoted
-            case doubleQuoted
-        }
-
-        let characters = Array(rawValue)
-        var quoteState = QuoteState.unquoted
-        var characterIndex = 0
-        while characterIndex < characters.count {
-            let character = characters[characterIndex]
-            switch quoteState {
-            case .unquoted:
-                if character == "'" {
-                    quoteState = .singleQuoted
-                } else if character == "\"" {
-                    quoteState = .doubleQuoted
-                } else if character == "\\" {
-                    characterIndex += 1
-                    guard characterIndex < characters.count else {
-                        return nil
-                    }
-                } else if character.isWhitespace {
-                    let suffixStartIndex = characterIndex
-                    while characterIndex < characters.count,
-                          characters[characterIndex].isWhitespace {
-                        characterIndex += 1
-                    }
-                    if characterIndex == characters.count {
-                        return (
-                            value: String(characters[..<suffixStartIndex]),
-                            commentSuffix: ""
-                        )
-                    }
-                    guard characters[characterIndex] == "#" else {
-                        return nil
-                    }
-                    return (
-                        value: String(characters[..<suffixStartIndex]),
-                        commentSuffix: String(characters[suffixStartIndex...])
-                    )
-                }
-            case .singleQuoted:
-                if character == "'" {
-                    quoteState = .unquoted
-                }
-            case .doubleQuoted:
-                if character == "\"" {
-                    quoteState = .unquoted
-                } else if character == "\\" {
-                    let nextCharacterIndex = characterIndex + 1
-                    guard nextCharacterIndex < characters.count else {
-                        return nil
-                    }
-                    let nextCharacter = characters[nextCharacterIndex]
-                    if nextCharacter == "$" || nextCharacter == "`" ||
-                        nextCharacter == "\"" || nextCharacter == "\\" {
-                        characterIndex = nextCharacterIndex
-                    }
-                }
-            }
-            characterIndex += 1
-        }
-        guard quoteState == .unquoted else {
-            return nil
-        }
-        return (value: rawValue, commentSuffix: "")
     }
 
     private func replaceConfigurationFile(with data: Data) throws {
         let temporaryFileURL = configurationFileURL
             .deletingLastPathComponent()
-            .appendingPathComponent(".env.\(UUID().uuidString)", isDirectory: false)
+            .appendingPathComponent(
+                ".vpn-settings.plist.\(UUID().uuidString)",
+                isDirectory: false
+            )
         defer {
             try? FileManager.default.removeItem(at: temporaryFileURL)
         }
@@ -394,9 +333,7 @@ final class VPNSettingsStore {
                 Darwin.close(temporaryFileDescriptor)
             }
         }
-        guard fchmod(temporaryFileDescriptor, mode_t(0o600)) == 0 else {
-            throw VPNSettingsStoreError.fileOperationFailed(String(cString: strerror(errno)))
-        }
+
         let writeSucceeded = data.withUnsafeBytes { buffer -> Bool in
             var writtenByteCount = 0
             while writtenByteCount < buffer.count {

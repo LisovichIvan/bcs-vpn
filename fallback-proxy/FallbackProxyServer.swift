@@ -460,30 +460,6 @@ private func requestThroughUpstream(
     }
 }
 
-private func relayDirection(sourceSocket: Int32, destinationSocket: Int32) {
-    var buffer = [UInt8](repeating: 0, count: 65_536)
-
-    while true {
-        let receivedBytes = buffer.withUnsafeMutableBytes { bytes in
-            Darwin.recv(sourceSocket, bytes.baseAddress, bytes.count, 0)
-        }
-        if receivedBytes == 0 {
-            return
-        }
-        if receivedBytes < 0 {
-            if errno == EINTR {
-                continue
-            }
-            return
-        }
-
-        let payload = Array(buffer[0..<receivedBytes])
-        if (try? writeAll(socketDescriptor: destinationSocket, bytes: payload)) == nil {
-            return
-        }
-    }
-}
-
 private func relaySockets(firstSocket: Int32, secondSocket: Int32) {
     setSocketTimeoutMilliseconds(
         socketDescriptor: firstSocket,
@@ -494,20 +470,65 @@ private func relaySockets(firstSocket: Int32, secondSocket: Int32) {
         milliseconds: Int(relayIdleTimeoutMilliseconds)
     )
 
-    let relayGroup = DispatchGroup()
-    relayGroup.enter()
-    DispatchQueue.global(qos: .utility).async {
-        relayDirection(sourceSocket: firstSocket, destinationSocket: secondSocket)
-        Darwin.shutdown(secondSocket, SHUT_WR)
-        relayGroup.leave()
+    let sockets = [firstSocket, secondSocket]
+    var activeDirections = [true, true]
+    var pollDescriptors = sockets.map {
+        pollfd(fd: $0, events: Int16(POLLIN), revents: 0)
     }
-    relayGroup.enter()
-    DispatchQueue.global(qos: .utility).async {
-        relayDirection(sourceSocket: secondSocket, destinationSocket: firstSocket)
-        Darwin.shutdown(firstSocket, SHUT_WR)
-        relayGroup.leave()
+    var buffer = [UInt8](repeating: 0, count: 65_536)
+
+    while activeDirections.contains(true) {
+        for directionIndex in pollDescriptors.indices {
+            pollDescriptors[directionIndex].fd = activeDirections[directionIndex]
+                ? sockets[directionIndex]
+                : -1
+            pollDescriptors[directionIndex].revents = 0
+        }
+
+        let pollResult = pollDescriptors.withUnsafeMutableBufferPointer { descriptors in
+            Darwin.poll(
+                descriptors.baseAddress,
+                nfds_t(descriptors.count),
+                relayIdleTimeoutMilliseconds
+            )
+        }
+        if pollResult == 0 {
+            return
+        }
+        if pollResult < 0 {
+            if errno == EINTR {
+                continue
+            }
+            return
+        }
+
+        for directionIndex in pollDescriptors.indices where activeDirections[directionIndex] {
+            let readyEvents = pollDescriptors[directionIndex].revents
+            let readableEvents = Int16(POLLIN | POLLHUP | POLLERR | POLLNVAL)
+            guard readyEvents & readableEvents != 0 else {
+                continue
+            }
+
+            let sourceSocket = sockets[directionIndex]
+            let destinationSocket = sockets[1 - directionIndex]
+            let receivedBytes = buffer.withUnsafeMutableBytes { bytes in
+                Darwin.recv(sourceSocket, bytes.baseAddress, bytes.count, 0)
+            }
+            if receivedBytes < 0 && errno == EINTR {
+                continue
+            }
+
+            if receivedBytes > 0 {
+                let payload = Array(buffer[0..<receivedBytes])
+                if (try? writeAll(socketDescriptor: destinationSocket, bytes: payload)) != nil {
+                    continue
+                }
+            }
+
+            activeDirections[directionIndex] = false
+            Darwin.shutdown(destinationSocket, SHUT_WR)
+        }
     }
-    relayGroup.wait()
 }
 
 private func handleClient(socketDescriptor: Int32, configuration: FallbackProxyConfiguration) {

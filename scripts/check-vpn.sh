@@ -7,7 +7,7 @@ RUN_DIRECTORY="$PROJECT_DIRECTORY/run"
 TEST_HOST="${1:-confluence.bcs.ru}"
 FALLBACK_PROXY_EXECUTABLE="$HOME/Applications/BCS VPN.app/Contents/MacOS/bcs-vpn"
 
-if [[ "$($SCRIPT_DIRECTORY/status.sh)" != "connected" ]]; then
+if [[ "$("$SCRIPT_DIRECTORY/status.sh")" != "connected" ]]; then
   echo "Нативный VPN не подключён." >&2
   [[ -f "$RUN_DIRECTORY/openconnect.log" ]] && /usr/bin/tail -n 30 "$RUN_DIRECTORY/openconnect.log" >&2
   exit 1

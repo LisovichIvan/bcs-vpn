@@ -130,7 +130,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         formStack.spacing = 14
 
         let explanationLabel = NSTextField(wrappingLabelWithString:
-            "Настройки сохраняются в локальном .env. Изменения используются при следующем подключении."
+            "Настройки сохраняются в локальном vpn-settings.plist. Изменения используются при следующем подключении."
         )
         explanationLabel.textColor = .secondaryLabelColor
 
@@ -256,7 +256,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             if FileManager.default.fileExists(atPath: settingsStore.configurationFileURL.path) {
                 setSettingsStatus("Настройки загружены.", color: .secondaryLabelColor)
             } else {
-                setSettingsStatus("Файл .env ещё не создан.", color: .systemOrange)
+                setSettingsStatus("Файл vpn-settings.plist ещё не создан.", color: .systemOrange)
             }
         } catch {
             applySettings(.empty)
@@ -440,7 +440,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             ? fileSize - maximumDisplayedLogBytes
             : 0
         try fileHandle.seek(toOffset: firstDisplayedByte)
-        let data = try fileHandle.readToEnd() ?? Data()
+        let data = try fileHandle.read(upToCount: Int(maximumDisplayedLogBytes)) ?? Data()
         let content = String(decoding: data, as: UTF8.self)
         guard firstDisplayedByte > 0 else {
             return content

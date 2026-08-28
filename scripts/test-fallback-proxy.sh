@@ -7,11 +7,70 @@ SERVER_SOURCE_FILE="$PROJECT_DIRECTORY/fallback-proxy/FallbackProxyServer.swift"
 MAIN_SOURCE_FILE="$PROJECT_DIRECTORY/fallback-proxy/main.swift"
 UPSTREAM_STUB="$PROJECT_DIRECTORY/fallback-proxy/test-upstream.py"
 TEST_CLIENT="$PROJECT_DIRECTORY/fallback-proxy/test-client.py"
-TEST_DIRECTORY="$PROJECT_DIRECTORY/run/fallback-test"
+TEST_ROOT_DIRECTORY="$PROJECT_DIRECTORY/run"
+mkdir -p "$TEST_ROOT_DIRECTORY"
+TEST_LOCK_FILE="$TEST_ROOT_DIRECTORY/fallback-test.lock"
+if ! /usr/bin/shlock -f "$TEST_LOCK_FILE" -p $$; then
+  echo "Другая проверка fallback SOCKS5 уже выполняется." >&2
+  exit 1
+fi
+TEST_DIRECTORY=""
+
+cleanup() {
+  local process_ids=()
+  local process_id
+
+  for process_id in \
+    "${outer_proxy_process_id:-}" \
+    "${inner_proxy_process_id:-}" \
+    "${close_fallback_process_id:-}" \
+    "${close_upstream_process_id:-}" \
+    "${hang_fallback_process_id:-}" \
+    "${hang_upstream_process_id:-}" \
+    "${malformed_fallback_process_id:-}" \
+    "${malformed_upstream_process_id:-}" \
+    "${reject_fallback_process_id:-}" \
+    "${reject_upstream_process_id:-}" \
+    "${half_close_destination_process_id:-}" \
+    "${http_server_process_id:-}"; do
+    if [[ -n "$process_id" ]]; then
+      process_ids+=("$process_id")
+    fi
+  done
+
+  if (( ${#process_ids[@]} > 0 )); then
+    kill -TERM "${process_ids[@]}" 2>/dev/null || true
+    for _ in $(seq 1 20); do
+      running_process_found=false
+      for process_id in "${process_ids[@]}"; do
+        if kill -0 "$process_id" 2>/dev/null; then
+          running_process_found=true
+          break
+        fi
+      done
+      [[ "$running_process_found" == false ]] && break
+      sleep 0.1
+    done
+    for process_id in "${process_ids[@]}"; do
+      if kill -0 "$process_id" 2>/dev/null; then
+        kill -KILL "$process_id" 2>/dev/null || true
+      fi
+    done
+    wait "${process_ids[@]}" 2>/dev/null || true
+  fi
+
+  if [[ -n "$TEST_DIRECTORY" ]]; then
+    rm -rf "$TEST_DIRECTORY"
+  fi
+  rm -f "$TEST_LOCK_FILE"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+TEST_DIRECTORY="$(mktemp -d "$TEST_ROOT_DIRECTORY/fallback-test.XXXXXX")"
 TEST_BINARY="$TEST_DIRECTORY/cisco-vpn-fallback-proxy"
 
-rm -rf "$TEST_DIRECTORY"
-mkdir -p "$TEST_DIRECTORY"
 swiftc -warnings-as-errors -O "$MAIN_SOURCE_FILE" "$SERVER_SOURCE_FILE" -o "$TEST_BINARY"
 
 python3 -m http.server 18080 --bind 127.0.0.1 > "$TEST_DIRECTORY/http.log" 2>&1 &
@@ -46,38 +105,9 @@ reject_upstream_process_id=$!
 "$TEST_BINARY" --listen-port 18885 --upstream-port 18895 \
   > "$TEST_DIRECTORY/reject-fallback.log" 2>&1 &
 reject_fallback_process_id=$!
-
-cleanup() {
-  kill \
-    "$outer_proxy_process_id" \
-    "$inner_proxy_process_id" \
-    "$close_fallback_process_id" \
-    "$close_upstream_process_id" \
-    "$hang_fallback_process_id" \
-    "$hang_upstream_process_id" \
-    "$malformed_fallback_process_id" \
-    "$malformed_upstream_process_id" \
-    "$reject_fallback_process_id" \
-    "$reject_upstream_process_id" \
-    "$http_server_process_id" \
-    2>/dev/null || true
-  wait \
-    "$outer_proxy_process_id" \
-    "$inner_proxy_process_id" \
-    "$close_fallback_process_id" \
-    "$close_upstream_process_id" \
-    "$hang_fallback_process_id" \
-    "$hang_upstream_process_id" \
-    "$malformed_fallback_process_id" \
-    "$malformed_upstream_process_id" \
-    "$reject_fallback_process_id" \
-    "$reject_upstream_process_id" \
-    "$http_server_process_id" \
-    2>/dev/null || true
-}
-trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
+python3 "$UPSTREAM_STUB" respond-after-eof 18896 \
+  > "$TEST_DIRECTORY/half-close-destination.log" 2>&1 &
+half_close_destination_process_id=$!
 
 sleep 2
 
@@ -99,6 +129,7 @@ done
 python3 "$TEST_CLIENT" 18885 18080 rejected
 python3 "$TEST_CLIENT" 18888 18080 rejected
 python3 "$TEST_CLIENT" 18887 18080 rejected
+python3 "$TEST_CLIENT" 18889 18896 half-close
 
 curl \
   -fsS \
@@ -127,7 +158,3 @@ if grep -q 'mode=direct' \
 fi
 
 echo "Fallback SOCKS5: direct, vpn и отказы upstream обработаны корректно."
-
-cleanup
-trap - EXIT INT TERM
-rm -rf "$TEST_DIRECTORY"

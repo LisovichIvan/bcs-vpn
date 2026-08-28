@@ -100,6 +100,8 @@ private enum ConnectionStatus {
 }
 
 private final class MenuBarController: NSObject, NSApplicationDelegate {
+    private static let maximumCommandLogBytes: UInt64 = 256 * 1_024
+
     private let configuration: Configuration
     private let statusItem = NSStatusBar.system.statusItem(withLength: 26)
     private let statusMenuItem = NSMenuItem(title: "Статус: проверка", action: nil, keyEquivalent: "")
@@ -205,7 +207,7 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
             process.standardError = logHandle
             process.terminationHandler = { [weak self] completedProcess in
                 try? logHandle.close()
-                let output = (try? String(contentsOf: logFile, encoding: .utf8)) ?? ""
+                let output = (try? Self.readCommandLogTail(at: logFile)) ?? ""
                 DispatchQueue.main.async {
                     self?.commandDidFinish(exitCode: completedProcess.terminationStatus, output: output)
                 }
@@ -256,6 +258,35 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
             throw NSError(domain: NSPOSIXErrorDomain, code: Int(errorNumber))
         }
         return FileHandle(fileDescriptor: fileDescriptor, closeOnDealloc: true)
+    }
+
+    private static func readCommandLogTail(at fileURL: URL) throws -> String {
+        let fileDescriptor = fileURL.path.withCString {
+            Darwin.open($0, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
+        }
+        guard fileDescriptor >= 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+
+        var fileInformation = stat()
+        guard fstat(fileDescriptor, &fileInformation) == 0,
+              fileInformation.st_mode & S_IFMT == S_IFREG else {
+            let errorNumber = errno == 0 ? EINVAL : errno
+            Darwin.close(fileDescriptor)
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errorNumber))
+        }
+
+        let fileHandle = FileHandle(fileDescriptor: fileDescriptor, closeOnDealloc: true)
+        let fileSize = try fileHandle.seekToEnd()
+        let firstDisplayedByte = fileSize > maximumCommandLogBytes
+            ? fileSize - maximumCommandLogBytes
+            : 0
+        try fileHandle.seek(toOffset: firstDisplayedByte)
+        let data = try fileHandle.read(upToCount: Int(maximumCommandLogBytes)) ?? Data()
+        let content = String(decoding: data, as: UTF8.self)
+        return firstDisplayedByte == 0
+            ? content
+            : "[Показаны последние 256 КБ журнала]\n" + content
     }
 
     private func commandDidFinish(exitCode: Int32, output: String) {

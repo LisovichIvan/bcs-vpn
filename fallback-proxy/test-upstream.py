@@ -38,6 +38,7 @@ def main() -> None:
             "hang-after-request",
             "malformed-replies",
             "reject-request",
+            "respond-after-eof",
         ],
     )
     argument_parser.add_argument("port", type=int)
@@ -59,6 +60,12 @@ def main() -> None:
         for connection_index in range(connection_count):
             connection, _ = server_socket.accept()
             with connection:
+                if arguments.mode == "respond-after-eof":
+                    while connection.recv(65_536):
+                        pass
+                    connection.sendall(b"response-after-eof")
+                    return
+
                 read_exactly(connection, 3)
                 if arguments.mode == "close-after-greeting":
                     return

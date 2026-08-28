@@ -48,7 +48,7 @@ if [[ -x "$INSTALLED_RUNTIME_DIRECTORY/bin/openconnect" ]] && \
   exit 1
 fi
 
-current_status="$($SCRIPT_DIRECTORY/status.sh)"
+current_status="$("$SCRIPT_DIRECTORY/status.sh")"
 if [[ "$current_status" == "connected" || "$current_status" == "connecting" || "$current_status" == "failed" ]]; then
   echo "Нельзя заменять VPN runtime во время активного подключения." >&2
   exit 1

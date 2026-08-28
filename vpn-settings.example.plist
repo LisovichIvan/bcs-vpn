@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>serverURL</key>
+    <string>https://fw2.bcs.ru</string>
+    <key>username</key>
+    <string>your-login</string>
+    <key>rsaPIN</key>
+    <string>your-permanent-pin</string>
+    <key>certificateSHA1</key>
+    <string>CLIENT_CERTIFICATE_SHA1</string>
+    <key>serverCertificatePin</key>
+    <string>pin-sha256:SERVER_PUBLIC_KEY_SHA256</string>
+</dict>
+</plist>
