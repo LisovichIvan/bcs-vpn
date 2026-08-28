@@ -1,13 +1,26 @@
-# Изолированный Cisco VPN на macOS без Docker
+# BCS VPN для macOS
 
-`BCS VPN.app`, OpenConnect и ocproxy работают как обычные пользовательские
-процессы. Приложение объединяет меню macOS и fallback SOCKS5. VPN-пакеты
-обрабатываются в пользовательском пространстве и доступны приложениям только
-через локальный SOCKS5. Маршруты, DNS и сетевые интерфейсы macOS не меняются.
+Проект предоставляет изолированный доступ к корпоративным ресурсам BCS на Mac
+с Apple Silicon. `BCS VPN.app`, OpenConnect и ocproxy работают как обычные
+пользовательские процессы без Docker, Homebrew и прав администратора.
+
+Приложение объединяет меню macOS и fallback SOCKS5. VPN-пакеты обрабатываются в
+пользовательском пространстве и доступны приложениям только через локальный
+SOCKS5. Маршруты, DNS и сетевые интерфейсы macOS не меняются.
 
 Proxifier отправляет выбранные BCS-домены в постоянный локальный SOCKS5-фасад.
 Фасад использует VPN, когда туннель доступен, и прямое соединение, когда VPN
 остановлен. Остальной трафик всегда идёт напрямую.
+
+## Возможности
+
+- подключение и отключение VPN из строки меню macOS;
+- изоляция корпоративного трафика через правила Proxifier;
+- прямое соединение при недоступном VPN без изменения правил Proxifier;
+- аутентификация клиентским сертификатом и одноразовым кодом RSA SecurID;
+- просмотр настроек, состояния и журналов из приложения;
+- переносимый OpenConnect и ocproxy с проверкой контрольных сумм;
+- проверка неизменности системных маршрутов, DNS и сетевых интерфейсов.
 
 ## Схема
 
@@ -57,6 +70,13 @@ Homebrew, Docker, Cisco Secure Client и системные расширения
 `~/Library/Application Support/BCS VPN/runtime-macos-arm64`. Это позволяет
 дочерним VPN-процессам работать без ограничений доступа macOS к `Documents`.
 
+Дополнительно нужны:
+
+- Xcode Command Line Tools с компилятором Swift;
+- Proxifier;
+- клиентский сертификат BCS в Keychain;
+- приложение RSA SecurID.
+
 ## Параметры подключения
 
 - шлюз: `fw2.bcs.ru:443`;
@@ -66,6 +86,39 @@ Homebrew, Docker, Cisco Secure Client и системные расширения
 
 Сессия имеет серверное ограничение времени. После завершения нужен новый код
 RSA SecurID.
+
+## Быстрый старт
+
+1. Создайте локальную конфигурацию:
+
+   ```bash
+   cp .env.example .env
+   chmod 600 .env
+   ```
+
+2. Заполните параметры подключения по разделу [Настройка](#настройка).
+3. Проверьте fallback-прокси и подготовьте приложение:
+
+   ```bash
+   ./scripts/test-fallback-proxy.sh
+   ./scripts/install-app.sh --prepare
+   ```
+
+4. Настройте прямые правила и корпоративные цели по разделу
+   [Proxifier](#proxifier).
+5. Активируйте приложение и подключитесь:
+
+   ```bash
+   ./scripts/install-app.sh --activate
+   ./scripts/connect.sh
+   ```
+
+6. Проверьте состояние и сетевую изоляцию:
+
+   ```bash
+   ./scripts/status.sh
+   ./scripts/check-vpn.sh confluence.bcs.ru
+   ```
 
 ## Настройка
 
@@ -256,9 +309,59 @@ Fallback-прокси обслуживает до 512 одновременных
 После остановки правило Proxifier не меняется. Fallback-прокси перестаёт
 использовать `127.0.0.1:8890` и открывает выбранные соединения напрямую.
 
+## Команды
+
+| Команда | Назначение |
+| --- | --- |
+| `./scripts/install-app.sh --prepare` | Собрать приложение без замены активного LaunchAgent |
+| `./scripts/install-app.sh --activate` | Установить приложение и активировать LaunchAgent |
+| `./scripts/install-runtime.sh` | Проверить и обновить установленный runtime |
+| `./scripts/connect.sh` | Запросить новый код RSA SecurID и подключить VPN |
+| `./scripts/disconnect.sh` | Безопасно остановить OpenConnect и ocproxy |
+| `./scripts/status.sh` | Вывести `connected`, `connecting`, `disconnected`, `failed` или `unavailable` |
+| `./scripts/set-rsa-pin.sh` | Безопасно записать постоянный PIN в локальный `.env` |
+| `./scripts/check-vpn.sh [домен]` | Проверить прокси, доступ и сетевую изоляцию |
+| `./scripts/test-fallback-proxy.sh` | Собрать и проверить fallback SOCKS5 |
+| `python3 ./scripts/test-portable-ocproxy.py` | Проверить исходный и установленный ocproxy |
+
+## Структура проекта
+
+| Путь | Содержимое |
+| --- | --- |
+| `app/` | Исходники приложения строки меню, окна настроек и шаблоны plist |
+| `fallback-proxy/` | Реализация и тестовые помощники fallback SOCKS5 |
+| `scripts/` | Установка, управление подключением, диагностика и тесты |
+| `vendor/macos-arm64/` | Переносимые OpenConnect, ocproxy, библиотеки, лицензии и контрольные суммы |
+| `run/` | Генерируемые журналы, файлы процессов, снимки сети и сборочные артефакты |
+| `.env.example` | Шаблон локальной конфигурации без секретов |
+
+Каталоги `run/`, `bin/`, локальный `.env`, временные варианты `.env.*`, образы
+DMG и файлы `.DS_Store` не входят в репозиторий.
+
+## Проверка исходников
+
+Проверки без подключения к VPN:
+
+```bash
+bash -n scripts/*.sh
+swiftc -warnings-as-errors -typecheck \
+  app/main.swift \
+  app/VPNSettingsStore.swift \
+  app/SettingsWindowController.swift \
+  fallback-proxy/FallbackProxyServer.swift
+./scripts/test-fallback-proxy.sh
+```
+
+Проверка переносимого ocproxy требует предварительно установленного runtime и
+свободного порта `127.0.0.1:8890`:
+
+```bash
+python3 ./scripts/test-portable-ocproxy.py
+```
+
 ## Перенос на другой Mac
 
-1. Скопируйте каталог `anyconnect-native` целиком.
+1. Скопируйте каталог `bcs-vpn` целиком.
 2. Импортируйте клиентский сертификат в Keychain нового Mac.
 3. Создайте локальный `.env`; не передавайте существующий файл через Git.
 4. Запустите `./scripts/install-app.sh --prepare`.
