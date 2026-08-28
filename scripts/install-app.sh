@@ -4,20 +4,21 @@ set -euo pipefail
 SCRIPT_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIRECTORY="$(dirname "$SCRIPT_DIRECTORY")"
 APPLICATION_SOURCE_FILE="$PROJECT_DIRECTORY/app/main.swift"
+APPLICATION_SETTINGS_STORE_SOURCE_FILE="$PROJECT_DIRECTORY/app/VPNSettingsStore.swift"
+APPLICATION_SETTINGS_WINDOW_SOURCE_FILE="$PROJECT_DIRECTORY/app/SettingsWindowController.swift"
 FALLBACK_PROXY_SOURCE_FILE="$PROJECT_DIRECTORY/fallback-proxy/FallbackProxyServer.swift"
 APPLICATION_INFO_TEMPLATE="$PROJECT_DIRECTORY/app/Info.plist"
 APPLICATIONS_DIRECTORY="$HOME/Applications"
 APPLICATION_BUNDLE="$APPLICATIONS_DIRECTORY/BCS VPN.app"
 STAGING_APPLICATION_BUNDLE="$APPLICATIONS_DIRECTORY/.BCS VPN.app.staging.$$"
 PREVIOUS_APPLICATION_BUNDLE="$APPLICATIONS_DIRECTORY/.BCS VPN.app.previous.$$"
-APPLICATION_EXECUTABLE="$APPLICATION_BUNDLE/Contents/MacOS/cisco-vpn-fallback-proxy"
-STAGING_APPLICATION_EXECUTABLE="$STAGING_APPLICATION_BUNDLE/Contents/MacOS/cisco-vpn-fallback-proxy"
+APPLICATION_EXECUTABLE="$APPLICATION_BUNDLE/Contents/MacOS/bcs-vpn"
+STAGING_APPLICATION_EXECUTABLE="$STAGING_APPLICATION_BUNDLE/Contents/MacOS/bcs-vpn"
 INSTALLATION_DIRECTORY="$HOME/Library/Application Support/BCS VPN"
 RUNTIME_DIRECTORY="$INSTALLATION_DIRECTORY/runtime-macos-arm64"
 RUN_DIRECTORY="$PROJECT_DIRECTORY/run"
 BACKUP_DIRECTORY="$RUN_DIRECTORY/app-install-backup.$$"
 LOG_FILE="$INSTALLATION_DIRECTORY/bcs-vpn.log"
-COMMAND_LOG_FILE="$RUN_DIRECTORY/menu-bar.log"
 PLIST_TEMPLATE="$PROJECT_DIRECTORY/app/com.bcs.vpn.plist"
 GENERATED_PLIST="$RUN_DIRECTORY/com.bcs.vpn.plist"
 INSTALLED_PLIST="$HOME/Library/LaunchAgents/com.bcs.vpn.plist"
@@ -174,8 +175,15 @@ mkdir -p \
   "$RUN_DIRECTORY" \
   "$HOME/Library/LaunchAgents"
 chmod 700 "$INSTALLATION_DIRECTORY"
-touch "$LOG_FILE" "$COMMAND_LOG_FILE"
-chmod 600 "$LOG_FILE" "$COMMAND_LOG_FILE"
+if [[ -L "$LOG_FILE" || ( -e "$LOG_FILE" && ! -f "$LOG_FILE" ) ]]; then
+  echo "Путь журнала приложения должен указывать на обычный файл: $LOG_FILE" >&2
+  exit 1
+fi
+if [[ ! -e "$LOG_FILE" ]]; then
+  umask 077
+  : > "$LOG_FILE"
+fi
+chmod 600 "$LOG_FILE"
 if ! /usr/bin/shlock -f "$APPLICATION_INSTALL_LOCK_FILE" -p $$; then
   echo "Другая установка BCS VPN.app ещё выполняется." >&2
   exit 1
@@ -209,6 +217,8 @@ sed \
 chmod 644 "$STAGING_APPLICATION_BUNDLE/Contents/Info.plist"
 swiftc -warnings-as-errors -O \
   "$APPLICATION_SOURCE_FILE" \
+  "$APPLICATION_SETTINGS_STORE_SOURCE_FILE" \
+  "$APPLICATION_SETTINGS_WINDOW_SOURCE_FILE" \
   "$FALLBACK_PROXY_SOURCE_FILE" \
   -o "$STAGING_APPLICATION_EXECUTABLE"
 chmod 755 "$STAGING_APPLICATION_EXECUTABLE"
@@ -264,7 +274,9 @@ launchctl bootout "$LAUNCH_AGENT_DOMAIN/$LAUNCH_AGENT_LABEL" 2>/dev/null || true
 launchctl bootout "$LAUNCH_AGENT_DOMAIN/$OLD_MENU_LABEL" 2>/dev/null || true
 launchctl bootout "$LAUNCH_AGENT_DOMAIN/$OLD_FALLBACK_LABEL" 2>/dev/null || true
 
-if ! launchctl bootstrap "$LAUNCH_AGENT_DOMAIN" "$GENERATED_PLIST"; then
+cp "$GENERATED_PLIST" "$INSTALLED_PLIST"
+chmod 644 "$INSTALLED_PLIST"
+if ! launchctl bootstrap "$LAUNCH_AGENT_DOMAIN" "$INSTALLED_PLIST"; then
   echo "Не удалось зарегистрировать единый LaunchAgent BCS VPN." >&2
   exit 1
 fi
@@ -300,8 +312,6 @@ if [[ "$application_is_ready" != true ]]; then
   exit 1
 fi
 
-cp "$GENERATED_PLIST" "$INSTALLED_PLIST"
-chmod 644 "$INSTALLED_PLIST"
 rm -f "$OLD_MENU_PLIST" "$OLD_FALLBACK_PLIST"
 if [[ ! -f "$INSTALLED_PLIST" || -e "$OLD_MENU_PLIST" || -e "$OLD_FALLBACK_PLIST" ]]; then
   echo "Не удалось заменить файлы LaunchAgent." >&2

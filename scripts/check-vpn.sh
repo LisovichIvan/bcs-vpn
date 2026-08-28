@@ -5,7 +5,7 @@ SCRIPT_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIRECTORY="$(dirname "$SCRIPT_DIRECTORY")"
 RUN_DIRECTORY="$PROJECT_DIRECTORY/run"
 TEST_HOST="${1:-confluence.bcs.ru}"
-FALLBACK_PROXY_EXECUTABLE="$HOME/Applications/BCS VPN.app/Contents/MacOS/cisco-vpn-fallback-proxy"
+FALLBACK_PROXY_EXECUTABLE="$HOME/Applications/BCS VPN.app/Contents/MacOS/bcs-vpn"
 
 if [[ "$($SCRIPT_DIRECTORY/status.sh)" != "connected" ]]; then
   echo "Нативный VPN не подключён." >&2

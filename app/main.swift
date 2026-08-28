@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 
 private struct Configuration {
@@ -104,7 +105,15 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
     private let statusMenuItem = NSMenuItem(title: "Статус: проверка", action: nil, keyEquivalent: "")
     private let connectMenuItem = NSMenuItem(title: "Подключить", action: #selector(connect), keyEquivalent: "")
     private let disconnectMenuItem = NSMenuItem(title: "Отключить", action: #selector(disconnect), keyEquivalent: "")
+    private let settingsMenuItem = NSMenuItem(
+        title: "Настройки и журналы…",
+        action: #selector(openSettingsAndLogs),
+        keyEquivalent: ","
+    )
     private let fallbackProxyServer = FallbackProxyServer()
+    private lazy var settingsWindowController = SettingsWindowController(
+        projectDirectory: configuration.projectDirectory
+    )
     private var activeCommand: Process?
     private var fallbackProxyFailure: String?
     private var statusCheckInProgress = false
@@ -139,11 +148,14 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
         statusMenuItem.isEnabled = false
         connectMenuItem.target = self
         disconnectMenuItem.target = self
+        settingsMenuItem.target = self
 
         menu.addItem(statusMenuItem)
         menu.addItem(.separator())
         menu.addItem(connectMenuItem)
         menu.addItem(disconnectMenuItem)
+        menu.addItem(.separator())
+        menu.addItem(settingsMenuItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(
             title: "Выйти",
@@ -161,6 +173,10 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
 
     @objc private func disconnect() {
         runCommand(scriptName: "disconnect.sh", progressStatus: .disconnecting)
+    }
+
+    @objc private func openSettingsAndLogs() {
+        settingsWindowController.open()
     }
 
     private func runCommand(scriptName: String, progressStatus: ConnectionStatus) {
@@ -184,17 +200,7 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
             .appendingPathComponent("menu-bar.log")
 
         do {
-            FileManager.default.createFile(
-                atPath: logFile.path,
-                contents: nil,
-                attributes: [.posixPermissions: NSNumber(value: 0o600)]
-            )
-            try FileManager.default.setAttributes(
-                [.posixPermissions: NSNumber(value: 0o600)],
-                ofItemAtPath: logFile.path
-            )
-            let logHandle = try FileHandle(forWritingTo: logFile)
-            try logHandle.truncate(atOffset: 0)
+            let logHandle = try openCommandLog(at: logFile)
             process.standardOutput = logHandle
             process.standardError = logHandle
             process.terminationHandler = { [weak self] completedProcess in
@@ -212,6 +218,44 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
             applyStatus(.unavailable)
             showError(title: "Не удалось запустить команду", details: error.localizedDescription)
         }
+    }
+
+    private func openCommandLog(at fileURL: URL) throws -> FileHandle {
+        let openFlags = O_WRONLY | O_APPEND | O_NONBLOCK | O_NOFOLLOW
+        var fileDescriptor = fileURL.path.withCString {
+            Darwin.open($0, openFlags)
+        }
+        if fileDescriptor < 0 && errno == ENOENT {
+            fileDescriptor = fileURL.path.withCString {
+                Darwin.open($0, openFlags | O_CREAT | O_EXCL, mode_t(0o600))
+            }
+        }
+        guard fileDescriptor >= 0 else {
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errno))
+        }
+
+        var fileInformation = stat()
+        guard fstat(fileDescriptor, &fileInformation) == 0,
+              fileInformation.st_mode & S_IFMT == S_IFREG,
+              fchmod(fileDescriptor, mode_t(0o600)) == 0,
+              ftruncate(fileDescriptor, 0) == 0 else {
+            let errorNumber = errno == 0 ? EINVAL : errno
+            Darwin.close(fileDescriptor)
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errorNumber))
+        }
+
+        let fileStatusFlags = fcntl(fileDescriptor, F_GETFL)
+        guard fileStatusFlags >= 0,
+              fcntl(
+                  fileDescriptor,
+                  F_SETFL,
+                  (fileStatusFlags | O_APPEND) & ~O_NONBLOCK
+              ) == 0 else {
+            let errorNumber = errno
+            Darwin.close(fileDescriptor)
+            throw NSError(domain: NSPOSIXErrorDomain, code: Int(errorNumber))
+        }
+        return FileHandle(fileDescriptor: fileDescriptor, closeOnDealloc: true)
     }
 
     private func commandDidFinish(exitCode: Int32, output: String) {
