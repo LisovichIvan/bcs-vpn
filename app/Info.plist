@@ -10,6 +10,8 @@
     <string>bcs-vpn</string>
     <key>CFBundleIdentifier</key>
     <string>com.bcs.vpn</string>
+    <key>CFBundleIconFile</key>
+    <string>BCSVPN.icns</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
     <key>CFBundleName</key>
