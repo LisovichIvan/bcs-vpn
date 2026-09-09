@@ -122,7 +122,10 @@ final class VPNSettingsStore {
 
     func load() throws -> VPNSettings {
         if let configurationData = try readSecureFile(at: configurationFileURL) {
-            return try decodePropertyList(configurationData)
+            return try decodePropertyList(
+                configurationData,
+                fileName: configurationFileURL.lastPathComponent
+            )
         }
         guard let legacyData = try readSecureFile(at: legacyConfigurationFileURL) else {
             return .empty
@@ -131,6 +134,13 @@ final class VPNSettingsStore {
         let migratedSettings = try decodeLegacyConfiguration(legacyData).validated()
         _ = try save(migratedSettings)
         return migratedSettings
+    }
+
+    func load(from fileURL: URL) throws -> VPNSettings {
+        guard let data = try readRegularFile(at: fileURL) else {
+            throw VPNSettingsStoreError.invalidConfigurationFile(fileURL.lastPathComponent)
+        }
+        return try decodePropertyList(data, fileName: fileURL.lastPathComponent)
     }
 
     func save(_ settings: VPNSettings) throws -> VPNSettings {
@@ -145,23 +155,44 @@ final class VPNSettingsStore {
         } catch {
             throw VPNSettingsStoreError.fileOperationFailed(error.localizedDescription)
         }
-        try replaceConfigurationFile(with: configurationData)
+        try replaceConfigurationFile(with: configurationData, at: configurationFileURL)
         return normalizedSettings
     }
 
-    private func decodePropertyList(_ data: Data) throws -> VPNSettings {
+    func export(_ settings: VPNSettings, to fileURL: URL) throws {
+        let normalizedSettings = try settings.validated()
+        let encoder = PropertyListEncoder()
+        encoder.outputFormat = .xml
+        let configurationData: Data
+        do {
+            configurationData = try encoder.encode(normalizedSettings)
+        } catch {
+            throw VPNSettingsStoreError.fileOperationFailed(error.localizedDescription)
+        }
+        try replaceConfigurationFile(with: configurationData, at: fileURL)
+    }
+
+    private func decodePropertyList(_ data: Data, fileName: String) throws -> VPNSettings {
         do {
             return try PropertyListDecoder().decode(VPNSettings.self, from: data).validated()
         } catch let error as VPNSettingsStoreError {
             throw error
         } catch {
             throw VPNSettingsStoreError.invalidConfigurationFile(
-                configurationFileURL.lastPathComponent
+                fileName
             )
         }
     }
 
     private func readSecureFile(at fileURL: URL) throws -> Data? {
+        try readFile(at: fileURL, requireSecurePermissions: true)
+    }
+
+    private func readRegularFile(at fileURL: URL) throws -> Data? {
+        try readFile(at: fileURL, requireSecurePermissions: false)
+    }
+
+    private func readFile(at fileURL: URL, requireSecurePermissions: Bool) throws -> Data? {
         let fileDescriptor = fileURL.path.withCString {
             Darwin.open($0, O_RDONLY | O_NOFOLLOW | O_CLOEXEC)
         }
@@ -174,9 +205,14 @@ final class VPNSettingsStore {
 
         var fileInformation = stat()
         guard fstat(fileDescriptor, &fileInformation) == 0,
-              fileInformation.st_mode & S_IFMT == S_IFREG,
-              fileInformation.st_uid == geteuid(),
-              fileInformation.st_mode & mode_t(0o077) == 0 else {
+              fileInformation.st_mode & S_IFMT == S_IFREG else {
+            Darwin.close(fileDescriptor)
+            throw VPNSettingsStoreError.unsafeConfigurationFile(fileURL.lastPathComponent)
+        }
+        if requireSecurePermissions && (
+            fileInformation.st_uid != geteuid() ||
+            fileInformation.st_mode & mode_t(0o077) != 0
+        ) {
             Darwin.close(fileDescriptor)
             throw VPNSettingsStoreError.unsafeConfigurationFile(fileURL.lastPathComponent)
         }
@@ -311,8 +347,8 @@ final class VPNSettingsStore {
         return quoteState == .unquoted ? decodedValue : nil
     }
 
-    private func replaceConfigurationFile(with data: Data) throws {
-        let temporaryFileURL = configurationFileURL
+    private func replaceConfigurationFile(with data: Data, at destinationURL: URL) throws {
+        let temporaryFileURL = destinationURL
             .deletingLastPathComponent()
             .appendingPathComponent(
                 ".vpn-settings.plist.\(UUID().uuidString)",
@@ -362,7 +398,7 @@ final class VPNSettingsStore {
         temporaryFileDescriptor = -1
 
         let renameResult = temporaryFileURL.path.withCString { temporaryPath in
-            configurationFileURL.path.withCString { configurationPath in
+            destinationURL.path.withCString { configurationPath in
                 Darwin.rename(temporaryPath, configurationPath)
             }
         }

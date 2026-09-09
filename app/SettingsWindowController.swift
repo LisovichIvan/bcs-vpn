@@ -24,6 +24,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let logTextView = NSTextView(frame: .zero)
     private let openLogButton = NSButton(title: "Открыть файл", target: nil, action: nil)
     private let clearLogButton = NSButton(title: "Очистить", target: nil, action: nil)
+    private let importSettingsButton = NSButton(title: "Импортировать…", target: nil, action: nil)
+    private let exportSettingsButton = NSButton(title: "Экспортировать…", target: nil, action: nil)
+    private var logsWindow: NSWindow?
     private var logRefreshTimer: Timer?
 
     init(projectDirectory: URL) {
@@ -49,7 +52,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         ]
 
         super.init(window: nil)
-        configureWindow()
+        configureSettingsWindow()
     }
 
     @available(*, unavailable)
@@ -66,33 +69,36 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
+    }
+
+    func openLogs() {
+        if logsWindow == nil {
+            configureLogsWindow()
+        }
+        logsWindow?.makeKeyAndOrderFront(nil)
+        NSApplication.shared.activate(ignoringOtherApps: true)
         refreshSelectedLog(forceScrollToEnd: true)
         startLogRefreshTimer()
     }
 
     func windowWillClose(_ notification: Notification) {
-        stopLogRefreshTimer()
+        guard let closedWindow = notification.object as? NSWindow else {
+            return
+        }
+        if closedWindow === logsWindow {
+            stopLogRefreshTimer()
+        }
     }
 
-    private func configureWindow() {
-        let tabViewController = NSTabViewController()
-        tabViewController.addTabViewItem(makeTabViewItem(
-            title: "Настройки",
-            view: makeSettingsView()
-        ))
-        tabViewController.addTabViewItem(makeTabViewItem(
-            title: "Журналы",
-            view: makeLogsView()
-        ))
-
+    private func configureSettingsWindow() {
         let settingsWindow = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 780, height: 560),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
-        settingsWindow.title = "BCS VPN"
-        settingsWindow.contentViewController = tabViewController
+        settingsWindow.title = "BCS VPN — Настройки"
+        settingsWindow.contentView = makeSettingsView()
         settingsWindow.minSize = NSSize(width: 720, height: 480)
         settingsWindow.isReleasedWhenClosed = false
         settingsWindow.center()
@@ -100,12 +106,20 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         window = settingsWindow
     }
 
-    private func makeTabViewItem(title: String, view: NSView) -> NSTabViewItem {
-        let viewController = NSViewController()
-        viewController.view = view
-        let tabViewItem = NSTabViewItem(viewController: viewController)
-        tabViewItem.label = title
-        return tabViewItem
+    private func configureLogsWindow() {
+        let logsWindow = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 900, height: 600),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
+            backing: .buffered,
+            defer: false
+        )
+        logsWindow.title = "BCS VPN — Журналы"
+        logsWindow.contentView = makeLogsView()
+        logsWindow.minSize = NSSize(width: 720, height: 480)
+        logsWindow.isReleasedWhenClosed = false
+        logsWindow.center()
+        logsWindow.delegate = self
+        self.logsWindow = logsWindow
     }
 
     private func makeSettingsView() -> NSView {
@@ -130,7 +144,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         formStack.spacing = 14
 
         let explanationLabel = NSTextField(wrappingLabelWithString:
-            "Настройки сохраняются в локальном vpn-settings.plist. Изменения используются при следующем подключении."
+            "Настройки сохраняются в локальном vpn-settings.plist. Изменения используются при следующем подключении. Для переноса на другой Mac экспортируйте профиль, а на новом компьютере импортируйте его и замените учетные данные."
         )
         explanationLabel.textColor = .secondaryLabelColor
 
@@ -145,7 +159,17 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         saveButton.keyEquivalent = "\r"
         saveButton.bezelStyle = .rounded
 
-        let buttonStack = NSStackView(views: [settingsStatusLabel, saveButton])
+        importSettingsButton.target = self
+        importSettingsButton.action = #selector(importSettings)
+        exportSettingsButton.target = self
+        exportSettingsButton.action = #selector(exportSettings)
+
+        let transferStack = NSStackView(views: [importSettingsButton, exportSettingsButton])
+        transferStack.orientation = .horizontal
+        transferStack.alignment = .centerY
+        transferStack.spacing = 10
+
+        let buttonStack = NSStackView(views: [transferStack, NSView(), settingsStatusLabel, saveButton])
         buttonStack.orientation = .horizontal
         buttonStack.alignment = .centerY
         buttonStack.distribution = .fill
@@ -294,6 +318,61 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         }
     }
 
+    @objc private func importSettings() {
+        let panel = NSOpenPanel()
+        panel.title = "Импорт настроек VPN"
+        panel.prompt = "Импортировать"
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+
+        guard panel.runModal() == .OK, let fileURL = panel.url else {
+            return
+        }
+
+        do {
+            let importedSettings = try settingsStore.load(from: fileURL)
+            applySettings(importedSettings)
+            setSettingsStatus(
+                "Профиль импортирован в форму. Нажмите «Сохранить», чтобы применить его.",
+                color: .systemOrange
+            )
+        } catch {
+            showError(title: "Не удалось импортировать настройки", details: error.localizedDescription)
+        }
+    }
+
+    @objc private func exportSettings() {
+        let settings = VPNSettings(
+            serverURL: serverURLTextField.stringValue,
+            username: usernameTextField.stringValue,
+            rsaPIN: rsaPINTextField.stringValue,
+            certificateSHA1: certificateSHA1TextField.stringValue,
+            serverCertificatePin: serverCertificatePinTextField.stringValue
+        )
+
+        let panel = NSSavePanel()
+        panel.title = "Экспорт настроек VPN"
+        panel.prompt = "Экспортировать"
+        panel.nameFieldStringValue = "vpn-settings.plist"
+        panel.canCreateDirectories = false
+
+        guard panel.runModal() == .OK, let fileURL = panel.url else {
+            return
+        }
+
+        do {
+            try settingsStore.export(settings, to: fileURL)
+            setSettingsStatus(
+                "Профиль экспортирован. Он содержит PIN RSA — передавайте файл только доверенному пользователю.",
+                color: .systemGreen
+            )
+        } catch {
+            setSettingsStatus(error.localizedDescription, color: .systemRed)
+            showError(title: "Не удалось экспортировать настройки", details: error.localizedDescription)
+        }
+    }
+
     private func setSettingsStatus(_ text: String, color: NSColor) {
         settingsStatusLabel.stringValue = text
         settingsStatusLabel.textColor = color
@@ -318,7 +397,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     @objc private func clearSelectedLog() {
         guard let logSource = selectedLogSource,
               isRegularFileWithoutSymbolicLink(logSource.fileURL),
-              let window else {
+              let logsWindow else {
             return
         }
 
@@ -328,7 +407,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         confirmationAlert.informativeText = "Содержимое файла будет удалено без возможности восстановления."
         confirmationAlert.addButton(withTitle: "Очистить")
         confirmationAlert.addButton(withTitle: "Отмена")
-        confirmationAlert.beginSheetModal(for: window) { [weak self] response in
+        confirmationAlert.beginSheetModal(for: logsWindow) { [weak self] response in
             guard response == .alertFirstButtonReturn else {
                 return
             }
@@ -482,8 +561,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         alert.alertStyle = .warning
         alert.messageText = title
         alert.informativeText = details
-        if let window {
-            alert.beginSheetModal(for: window)
+        let presentingWindow = logsWindow?.isKeyWindow == true ? logsWindow : window
+        if let presentingWindow {
+            alert.beginSheetModal(for: presentingWindow)
         } else {
             alert.runModal()
         }

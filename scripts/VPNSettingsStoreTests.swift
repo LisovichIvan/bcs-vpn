@@ -16,6 +16,9 @@ private enum VPNSettingsStoreTests {
         defer { try? FileManager.default.removeItem(at: testRootDirectory) }
 
         try testSaveAndLoad(in: testRootDirectory.appendingPathComponent("save", isDirectory: true))
+        try testPortableExportAndImport(
+            in: testRootDirectory.appendingPathComponent("portable", isDirectory: true)
+        )
         try testLegacyMigration(
             in: testRootDirectory.appendingPathComponent("migration", isDirectory: true)
         )
@@ -63,6 +66,21 @@ private enum VPNSettingsStoreTests {
         let permissions = (attributes[.posixPermissions] as? NSNumber)?.intValue
         guard permissions == 0o600 else {
             throw TestError.failed("Файл настроек создан с правами \(permissions ?? -1).")
+        }
+    }
+
+    private static func testPortableExportAndImport(in directory: URL) throws {
+        try createTestDirectory(directory)
+        let store = VPNSettingsStore(projectDirectory: directory)
+        let exportedFileURL = directory.appendingPathComponent("profile.plist", isDirectory: false)
+        let expectedSettings = makeValidSettings(username: "portable-user")
+        try store.export(expectedSettings, to: exportedFileURL)
+
+        let importedSettings = try store.load(from: exportedFileURL)
+        let attributes = try FileManager.default.attributesOfItem(atPath: exportedFileURL.path)
+        let permissions = (attributes[.posixPermissions] as? NSNumber)?.intValue
+        guard importedSettings == expectedSettings, permissions == 0o600 else {
+            throw TestError.failed("Переносимый профиль настроек импортирован некорректно.")
         }
     }
 

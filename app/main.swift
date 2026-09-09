@@ -108,9 +108,14 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
     private let connectMenuItem = NSMenuItem(title: "Подключить", action: #selector(connect), keyEquivalent: "")
     private let disconnectMenuItem = NSMenuItem(title: "Отключить", action: #selector(disconnect), keyEquivalent: "")
     private let settingsMenuItem = NSMenuItem(
-        title: "Настройки и журналы…",
-        action: #selector(openSettingsAndLogs),
+        title: "Настройки…",
+        action: #selector(openSettings),
         keyEquivalent: ","
+    )
+    private let logsMenuItem = NSMenuItem(
+        title: "Журналы…",
+        action: #selector(openLogs),
+        keyEquivalent: ""
     )
     private let fallbackProxyServer = FallbackProxyServer()
     private lazy var settingsWindowController = SettingsWindowController(
@@ -151,6 +156,7 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
         connectMenuItem.target = self
         disconnectMenuItem.target = self
         settingsMenuItem.target = self
+        logsMenuItem.target = self
 
         menu.addItem(statusMenuItem)
         menu.addItem(.separator())
@@ -158,6 +164,7 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
         menu.addItem(disconnectMenuItem)
         menu.addItem(.separator())
         menu.addItem(settingsMenuItem)
+        menu.addItem(logsMenuItem)
         menu.addItem(.separator())
         menu.addItem(NSMenuItem(
             title: "Выйти",
@@ -177,8 +184,12 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
         runCommand(scriptName: "disconnect.sh", progressStatus: .disconnecting)
     }
 
-    @objc private func openSettingsAndLogs() {
+    @objc private func openSettings() {
         settingsWindowController.open()
+    }
+
+    @objc private func openLogs() {
+        settingsWindowController.openLogs()
     }
 
     private func runCommand(scriptName: String, progressStatus: ConnectionStatus) {
