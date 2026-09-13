@@ -17,13 +17,13 @@ PREVIOUS_APPLICATION_BUNDLE="$APPLICATIONS_DIRECTORY/.BCS VPN.app.previous.$$"
 APPLICATION_EXECUTABLE="$APPLICATION_BUNDLE/Contents/MacOS/bcs-vpn"
 STAGING_APPLICATION_EXECUTABLE="$STAGING_APPLICATION_BUNDLE/Contents/MacOS/bcs-vpn"
 STAGING_APPLICATION_COMMAND_HELPER_EXECUTABLE="$STAGING_APPLICATION_BUNDLE/Contents/MacOS/bcs-vpn-helper"
+SOURCE_RUNTIME_DIRECTORY="$PROJECT_DIRECTORY/vendor/macos-arm64"
+STAGING_RUNTIME_DIRECTORY="$STAGING_APPLICATION_BUNDLE/Contents/Resources/runtime-macos-arm64"
 INSTALLATION_DIRECTORY="$HOME/Library/Application Support/BCS VPN"
-RUNTIME_DIRECTORY="$INSTALLATION_DIRECTORY/runtime-macos-arm64"
+RUNTIME_DIRECTORY="$APPLICATION_BUNDLE/Contents/Resources/runtime-macos-arm64"
 RUN_DIRECTORY="$PROJECT_DIRECTORY/run"
 BACKUP_DIRECTORY="$RUN_DIRECTORY/app-install-backup.$$"
 LOG_FILE="$INSTALLATION_DIRECTORY/bcs-vpn.log"
-PLIST_TEMPLATE="$PROJECT_DIRECTORY/app/com.bcs.vpn.plist"
-GENERATED_PLIST="$RUN_DIRECTORY/com.bcs.vpn.plist"
 INSTALLED_PLIST="$HOME/Library/LaunchAgents/com.bcs.vpn.plist"
 LAUNCH_AGENT_DOMAIN="gui/$(id -u)"
 LAUNCH_AGENT_LABEL="com.bcs.vpn"
@@ -46,8 +46,8 @@ old_fallback_was_loaded=false
 lifecycle_lock_acquired=false
 application_install_lock_acquired=false
 
-if [[ "$#" -gt 1 || ( "$installation_mode" != "--prepare" && "$installation_mode" != "--activate" ) ]]; then
-  echo "Использование: $0 [--prepare|--activate]" >&2
+if [[ "$#" -gt 1 || "$installation_mode" != "--prepare" ]]; then
+  echo "Использование: $0" >&2
   exit 1
 fi
 
@@ -194,20 +194,20 @@ fi
 application_install_lock_acquired=true
 
 current_status="$("$SCRIPT_DIRECTORY/status.sh")"
-if [[ "$installation_mode" == "--activate" && "$current_status" != "disconnected" ]]; then
-  echo "Для безопасной замены старого LaunchAgent сначала отключите VPN." >&2
-  exit 1
+
+if [[ "$current_status" != "disconnected" && "$current_status" != "unavailable" ]]; then
+  if [[ ! -x "$RUNTIME_DIRECTORY/bin/openconnect" || ! -x "$RUNTIME_DIRECTORY/bin/ocproxy" ]]; then
+    echo "Активное подключение использует повреждённый или неполный VPN runtime." >&2
+    exit 1
+  fi
 fi
-if [[ "$current_status" == "disconnected" || "$current_status" == "unavailable" ]]; then
-  "$SCRIPT_DIRECTORY/install-runtime.sh"
-elif [[ ! -x "$RUNTIME_DIRECTORY/bin/openconnect" || ! -x "$RUNTIME_DIRECTORY/bin/ocproxy" ]] || \
-  ! (cd "$RUNTIME_DIRECTORY" && shasum -a 256 -c CHECKSUMS.sha256 >/dev/null); then
-  echo "Активное подключение использует повреждённый или неполный VPN runtime." >&2
+if ! (cd "$SOURCE_RUNTIME_DIRECTORY" && shasum -a 256 -c CHECKSUMS.sha256 >/dev/null); then
+  echo "Контрольные суммы исходного VPN runtime не совпадают." >&2
   exit 1
 fi
 
-if [[ "$installation_mode" == "--prepare" ]] && launch_agent_is_loaded "$LAUNCH_AGENT_LABEL"; then
-  echo "Единое приложение уже активно. Для обновления используйте --activate после отключения VPN." >&2
+if launch_agent_is_loaded "$LAUNCH_AGENT_LABEL"; then
+  echo "Приложение уже активно через LaunchAgent. Отключите автозапуск в настройках перед обновлением." >&2
   exit 1
 fi
 
@@ -219,6 +219,19 @@ if [[ ! -f "$APPLICATION_ICON_FILE" ]]; then
 fi
 cp "$APPLICATION_ICON_FILE" "$STAGING_APPLICATION_BUNDLE/Contents/Resources/BCSVPN.icns"
 chmod 644 "$STAGING_APPLICATION_BUNDLE/Contents/Resources/BCSVPN.icns"
+if ! (cd "$SOURCE_RUNTIME_DIRECTORY" && shasum -a 256 -c CHECKSUMS.sha256 >/dev/null); then
+  echo "Контрольные суммы исходного VPN runtime не совпадают." >&2
+  exit 1
+fi
+/usr/bin/ditto "$SOURCE_RUNTIME_DIRECTORY" "$STAGING_RUNTIME_DIRECTORY"
+chmod 700 "$STAGING_RUNTIME_DIRECTORY/bin/openconnect" "$STAGING_RUNTIME_DIRECTORY/bin/ocproxy"
+for library_file in "$STAGING_RUNTIME_DIRECTORY"/lib/*.dylib; do
+  chmod 700 "$library_file"
+done
+if ! (cd "$STAGING_RUNTIME_DIRECTORY" && shasum -a 256 -c CHECKSUMS.sha256 >/dev/null); then
+  echo "Контрольные суммы встроенного VPN runtime не совпадают." >&2
+  exit 1
+fi
 PROJECT_DIRECTORY_REPLACEMENT="$(escape_xml_for_sed_replacement "$PROJECT_DIRECTORY")"
 sed \
   -e "s|__PROJECT_DIRECTORY__|$PROJECT_DIRECTORY_REPLACEMENT|g" \
@@ -240,17 +253,6 @@ plutil -lint "$STAGING_APPLICATION_BUNDLE/Contents/Info.plist"
 codesign --force --deep --sign - "$STAGING_APPLICATION_BUNDLE"
 codesign --verify --deep --strict "$STAGING_APPLICATION_BUNDLE"
 
-EXECUTABLE_SEARCH_PATH="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
-APPLICATION_EXECUTABLE_REPLACEMENT="$(escape_xml_for_sed_replacement "$APPLICATION_EXECUTABLE")"
-EXECUTABLE_SEARCH_PATH_REPLACEMENT="$(escape_xml_for_sed_replacement "$EXECUTABLE_SEARCH_PATH")"
-LOG_PATH_REPLACEMENT="$(escape_xml_for_sed_replacement "$LOG_FILE")"
-sed \
-  -e "s|__BINARY_PATH__|$APPLICATION_EXECUTABLE_REPLACEMENT|g" \
-  -e "s|__EXECUTABLE_SEARCH_PATH__|$EXECUTABLE_SEARCH_PATH_REPLACEMENT|g" \
-  -e "s|__LOG_PATH__|$LOG_PATH_REPLACEMENT|g" \
-  "$PLIST_TEMPLATE" > "$GENERATED_PLIST"
-plutil -lint "$GENERATED_PLIST"
-
 if [[ -d "$APPLICATION_BUNDLE" ]]; then
   mv "$APPLICATION_BUNDLE" "$PREVIOUS_APPLICATION_BUNDLE"
 fi
@@ -264,7 +266,7 @@ if [[ "$installation_mode" == "--prepare" ]]; then
   application_install_lock_acquired=false
   trap - EXIT INT TERM
   echo "BCS VPN.app подготовлен в $APPLICATION_BUNDLE."
-  echo "Добавьте BCS VPN.app в прямое правило Proxifier, затем запустите: $0 --activate"
+  echo "Добавьте BCS VPN.app в прямое правило Proxifier, затем откройте приложение."
   exit 0
 fi
 

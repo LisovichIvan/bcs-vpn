@@ -21,6 +21,7 @@ Proxifier отправляет выбранные BCS-домены в посто
 - прямое соединение при недоступном VPN без изменения правил Proxifier;
 - аутентификация клиентским сертификатом и одноразовым кодом RSA SecurID;
 - просмотр настроек, состояния и журналов из приложения;
+- включение и выключение автозапуска через чекбокс в настройках;
 - переносимый OpenConnect и ocproxy с проверкой контрольных сумм;
 - проверка неизменности системных маршрутов, DNS и сетевых интерфейсов.
 
@@ -30,14 +31,14 @@ Proxifier отправляет выбранные BCS-домены в посто
 Выбранные BCS-домены
         |
         v
-Proxifier -> SOCKS5 127.0.0.1:8889
+Proxifier -> fallback proxy SOCKS5 127.0.0.1:8889
         |
-        +-- ocproxy 127.0.0.1:8890 доступен
+        +-- VPN proxy 127.0.0.1:8890 доступен
         |      |
         |      v
         |   OpenConnect --script-tun -> fw2.bcs.ru
         |
-        +-- ocproxy недоступен -> Direct
+        +-- VPN proxy недоступен -> Direct
 
 Остальной трафик -> Direct
 ```
@@ -71,9 +72,9 @@ Proxifier -> SOCKS5 127.0.0.1:8889
 Homebrew, Docker, Cisco Secure Client и системные расширения не требуются.
 Python не используется приложением и скриптами подключения; он нужен только
 для тестовых помощников.
-При установке меню runtime копируется из проекта в
-`~/Library/Application Support/BCS VPN/runtime-macos-arm64`. Это позволяет
-дочерним VPN-процессам работать без ограничений доступа macOS к `Documents`.
+При сборке runtime встраивается непосредственно в `BCS VPN.app` в
+`Contents/Resources/runtime-macos-arm64`. Приложение и VPN-компоненты
+устанавливаются единым bundle.
 
 Дополнительно нужны:
 
@@ -106,15 +107,15 @@ RSA SecurID.
 
    ```bash
    ./scripts/test-fallback-proxy.sh
-   ./scripts/install-app.sh --prepare
+   ./scripts/install-app.sh
    ```
 
 4. Настройте прямые правила и корпоративные цели по разделу
    [Proxifier](#proxifier).
-5. Активируйте приложение и подключитесь:
+5. Запустите приложение и при необходимости включите автозапуск чекбоксом в
+   `Настройки…`, затем подключитесь:
 
    ```bash
-   ./scripts/install-app.sh --activate
    ./scripts/connect.sh
    ```
 
@@ -168,22 +169,17 @@ security find-certificate -c "Имя владельца сертификата" 
 
 ```bash
 ./scripts/test-fallback-proxy.sh
-./scripts/install-app.sh --prepare
+./scripts/install-app.sh
 ```
 
-Подготовка создаёт `~/Applications/BCS VPN.app`, но не останавливает старые
-LaunchAgent. Выберите это приложение в прямом правиле Proxifier, отключите VPN и
-активируйте новую схему:
+Команда создаёт `~/Applications/BCS VPN.app` и не управляет LaunchAgent.
+Выберите приложение в прямом правиле Proxifier. Автозапуск включается чекбоксом
+в настройках приложения; VPN при этом должен быть отключён.
 
-```bash
-./scripts/install-app.sh --activate
-```
-
-Активация при подключённом VPN запрещена: остановка старого LaunchAgent могла бы
-завершить запущенный им OpenConnect.
-
-Один LaunchAgent запускает `~/Applications/BCS VPN.app` при входе в macOS.
-Меню и fallback-прокси работают в одном процессе. Журнал приложения находится
+Чекбокс «Запускать BCS VPN при входе в macOS» в окне настроек добавляет или
+удаляет `~/Library/LaunchAgents/com.bcs.vpn.plist`. LaunchAgent запускает
+`~/Applications/BCS VPN.app` при входе в macOS. Меню и fallback-прокси работают
+в одном процессе. Журнал приложения находится
 в `~/Library/Application Support/BCS VPN/bcs-vpn.log`.
 Все состояния показываются контурной иконкой щита; состояние различается
 цветом и символом ошибки.
@@ -221,15 +217,16 @@ LaunchAgent. Выберите это приложение в прямом пра
 256 килобайт. Выбранный файл можно открыть во внешнем приложении или очистить
 после подтверждения.
 
-Для обновления только переносимого runtime без переустановки меню используйте:
+Для обновления runtime переустановите приложение: runtime входит в bundle и
+обновляется вместе с ним.
 
 ```bash
-./scripts/install-runtime.sh
+./scripts/install-app.sh
 ```
 
 Подключение, отключение и замена runtime используют общую блокировку в
-`~/Library/Application Support/BCS VPN`. Установка не заменяет runtime, пока
-запущен установленный OpenConnect. Вторая копия проекта также не запускает
+`~/Library/Application Support/BCS VPN`. Установка не заменяет приложение, пока
+запущен OpenConnect. Вторая копия проекта также не запускает
 параллельный OpenConnect из общего runtime.
 
 ## Подключение
@@ -341,9 +338,8 @@ Fallback-прокси обслуживает до 512 одновременных
 
 | Команда | Назначение |
 | --- | --- |
-| `./scripts/install-app.sh --prepare` | Собрать приложение без замены активного LaunchAgent |
-| `./scripts/install-app.sh --activate` | Установить приложение и активировать LaunchAgent |
-| `./scripts/install-runtime.sh` | Проверить и обновить установленный runtime |
+| `./scripts/install-app.sh` | Собрать и установить приложение |
+| `./scripts/install-runtime.sh` | Устаревшая команда: runtime входит в приложение |
 | `./scripts/connect.sh` | Запросить новый код RSA SecurID и подключить VPN |
 | `./scripts/disconnect.sh` | Безопасно остановить OpenConnect и ocproxy |
 | `./scripts/status.sh` | Вывести `connected`, `connecting`, `disconnected`, `failed` или `unavailable` |
@@ -395,13 +391,13 @@ python3 ./scripts/test-portable-ocproxy.py
 1. Скопируйте каталог `bcs-vpn` целиком. Если нужен готовый профиль, на исходном
    Mac экспортируйте его через `Настройки…` → `Экспортировать…`.
 2. Импортируйте клиентский сертификат нужного пользователя в Keychain нового Mac.
-3. Запустите `./scripts/install-app.sh --prepare`.
+3. Запустите `./scripts/install-app.sh`.
 4. Откройте отдельное окно `Настройки…`, при необходимости импортируйте профиль и замените имя
    пользователя, постоянный PIN и SHA-1 сертификата для нового сотрудника. Не импортируйте старый
    профиль, если учетные данные нельзя передавать; в этом случае заполните поля
    вручную.
 5. Выберите `BCS VPN.app` в прямом правиле Proxifier.
-6. Запустите `./scripts/install-app.sh --activate`.
+6. Откройте приложение и включите автозапуск чекбоксом в настройках.
 7. Подключитесь и выполните `./scripts/check-vpn.sh`.
 
 Если macOS добавила атрибут карантина после загрузки архива, сначала проверьте

@@ -18,6 +18,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let certificateSHA1TextField = NSTextField(string: "")
     private let serverCertificatePinTextField = NSTextField(string: "")
     private let settingsStatusLabel = NSTextField(labelWithString: "")
+    private let launchAtLoginCheckBox = NSButton(
+        checkboxWithTitle: "Запускать BCS VPN при входе в macOS",
+        target: nil,
+        action: nil
+    )
 
     private let logSourcePopupButton = NSPopUpButton(frame: .zero, pullsDown: false)
     private let logPathLabel = NSTextField(labelWithString: "")
@@ -150,6 +155,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         settingsStatusLabel.maximumNumberOfLines = 2
         settingsStatusLabel.lineBreakMode = .byWordWrapping
+        launchAtLoginCheckBox.target = self
+        launchAtLoginCheckBox.action = #selector(launchAtLoginDidChange)
+        launchAtLoginCheckBox.state = launchAgentIsInstalled ? .on : .off
 
         let saveButton = NSButton(
             title: "Сохранить",
@@ -170,6 +178,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         transferStack.spacing = 10
 
         let buttonStack = NSStackView(views: [transferStack, NSView(), settingsStatusLabel, saveButton])
+        let launchAtLoginContainer = NSStackView(views: [launchAtLoginCheckBox, NSView()])
+        launchAtLoginContainer.orientation = .horizontal
+        launchAtLoginContainer.alignment = .centerY
         buttonStack.orientation = .horizontal
         buttonStack.alignment = .centerY
         buttonStack.distribution = .fill
@@ -178,7 +189,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         saveButton.setContentHuggingPriority(.required, for: .horizontal)
 
         let contentView = NSView()
-        [formStack, explanationLabel, buttonStack].forEach {
+        [formStack, explanationLabel, launchAtLoginContainer, buttonStack].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             contentView.addSubview($0)
         }
@@ -189,8 +200,12 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             explanationLabel.topAnchor.constraint(equalTo: formStack.bottomAnchor, constant: 22),
             explanationLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 28),
             explanationLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -28),
+            launchAtLoginContainer.topAnchor.constraint(equalTo: explanationLabel.bottomAnchor, constant: 16),
+            launchAtLoginContainer.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 28),
+            launchAtLoginContainer.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -28),
             buttonStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 28),
             buttonStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -28),
+            buttonStack.topAnchor.constraint(equalTo: launchAtLoginContainer.bottomAnchor, constant: 16),
             buttonStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -24),
         ])
         return contentView
@@ -273,7 +288,96 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         return contentView
     }
 
+    private var launchAgentLabel: String { "com.bcs.vpn" }
+
+    private var launchAgentURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/LaunchAgents", isDirectory: true)
+            .appendingPathComponent("\(launchAgentLabel).plist", isDirectory: false)
+    }
+
+    private var launchAgentDomain: String { "gui/\(getuid())" }
+
+    private var launchAgentIsInstalled: Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = ["print", "\(launchAgentDomain)/\(launchAgentLabel)"]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try? process.run()
+        process.waitUntilExit()
+        return process.terminationStatus == 0
+    }
+
+    @objc private func launchAtLoginDidChange() {
+        do {
+            if launchAtLoginCheckBox.state == .on {
+                try installLaunchAgent()
+                setSettingsStatus("Автозапуск включён.", color: .systemGreen)
+            } else {
+                try removeLaunchAgent()
+                setSettingsStatus("Автозапуск выключен.", color: .secondaryLabelColor)
+            }
+        } catch {
+            launchAtLoginCheckBox.state = launchAgentIsInstalled ? .on : .off
+            setSettingsStatus(error.localizedDescription, color: .systemRed)
+        }
+    }
+
+    private func installLaunchAgent() throws {
+        let applicationURL = Bundle.main.bundleURL
+        let executableURL = applicationURL.appendingPathComponent("Contents/MacOS/bcs-vpn")
+        guard FileManager.default.isExecutableFile(atPath: executableURL.path) else {
+            throw NSError(domain: "BCSVPN", code: 1, userInfo: [NSLocalizedDescriptionKey: "Сначала установите приложение в ~/Applications."])
+        }
+        let plist: [String: Any] = [
+            "Label": launchAgentLabel,
+            "ProgramArguments": [executableURL.path],
+            "EnvironmentVariables": ["PATH": "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"],
+            "LimitLoadToSessionType": "Aqua",
+            "AssociatedBundleIdentifiers": ["com.bcs.vpn"],
+            "RunAtLoad": true,
+            "ProcessType": "Interactive",
+            "AbandonProcessGroup": true,
+            "StandardOutPath": applicationLogURL.path,
+            "StandardErrorPath": applicationLogURL.path,
+        ]
+        let data = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        try FileManager.default.createDirectory(at: launchAgentURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try data.write(to: launchAgentURL, options: .atomic)
+        if !launchAgentIsInstalled {
+            try runLaunchctl(["bootstrap", launchAgentDomain, launchAgentURL.path])
+        }
+        try runLaunchctl(["enable", "\(launchAgentDomain)/\(launchAgentLabel)"])
+    }
+
+    private func removeLaunchAgent() throws {
+        try runLaunchctl(["bootout", "\(launchAgentDomain)/\(launchAgentLabel)"], ignoreFailure: true)
+        if FileManager.default.fileExists(atPath: launchAgentURL.path) {
+            try FileManager.default.removeItem(at: launchAgentURL)
+        }
+    }
+
+    private func runLaunchctl(_ arguments: [String], ignoreFailure: Bool = false) throws {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/bin/launchctl")
+        process.arguments = arguments
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        try process.run()
+        process.waitUntilExit()
+        if !ignoreFailure && process.terminationStatus != 0 {
+            throw NSError(domain: "BCSVPN", code: Int(process.terminationStatus), userInfo: [NSLocalizedDescriptionKey: "Не удалось изменить автозапуск BCS VPN."])
+        }
+    }
+
+    private var applicationLogURL: URL {
+        FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/BCS VPN/bcs-vpn.log", isDirectory: false)
+    }
+
     private func loadSettings() {
+        launchAtLoginCheckBox.state = launchAgentIsInstalled ? .on : .off
         do {
             let settings = try settingsStore.load()
             applySettings(settings)

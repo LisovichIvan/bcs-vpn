@@ -5,7 +5,8 @@ SCRIPT_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIRECTORY="$(dirname "$SCRIPT_DIRECTORY")"
 RUN_DIRECTORY="$PROJECT_DIRECTORY/run"
 INSTALLATION_DIRECTORY="$HOME/Library/Application Support/BCS VPN"
-RUNTIME_DIRECTORY="$INSTALLATION_DIRECTORY/runtime-macos-arm64"
+APPLICATION_BUNDLE="${BCS_VPN_APP_BUNDLE:-$HOME/Applications/BCS VPN.app}"
+RUNTIME_DIRECTORY="$APPLICATION_BUNDLE/Contents/Resources/runtime-macos-arm64"
 OPENCONNECT_EXECUTABLE="$RUNTIME_DIRECTORY/bin/openconnect"
 OCPROXY_SCRIPT="$SCRIPT_DIRECTORY/run-ocproxy.sh"
 OPENCONNECT_PROCESS_ID_FILE="$RUN_DIRECTORY/openconnect.pid"
@@ -15,7 +16,7 @@ OCPROXY_START_TIME_FILE="$RUN_DIRECTORY/ocproxy.start-time"
 OPENCONNECT_LOG_FILE="$RUN_DIRECTORY/openconnect.log"
 OCPROXY_LOG_FILE="$RUN_DIRECTORY/ocproxy.log"
 LIFECYCLE_LOCK_FILE="$INSTALLATION_DIRECTORY/lifecycle.lock"
-VPN_COMMAND_HELPER="$HOME/Applications/BCS VPN.app/Contents/MacOS/bcs-vpn-helper"
+VPN_COMMAND_HELPER="$APPLICATION_BUNDLE/Contents/MacOS/bcs-vpn-helper"
 IDENTITY_PEM_FILE="$RUN_DIRECTORY/client-identity.pem"
 CERTIFICATE_PASSWORD_FILE="$RUN_DIRECTORY/certificate-password"
 VPN_PASSCODE_FILE="$RUN_DIRECTORY/vpn-passcode"
@@ -134,7 +135,7 @@ fi
 
 if [[ ! -x "$OPENCONNECT_EXECUTABLE" || ! -x "$RUNTIME_DIRECTORY/bin/ocproxy" || \
   ! -x "$VPN_COMMAND_HELPER" ]]; then
-  echo "Не найден переносимый VPN runtime в $RUNTIME_DIRECTORY." >&2
+  echo "Не найден VPN runtime внутри $APPLICATION_BUNDLE." >&2
   echo "Переустановите BCS VPN.app командой ./scripts/install-app.sh --activate." >&2
   exit 1
 fi

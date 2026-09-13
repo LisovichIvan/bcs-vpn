@@ -3,7 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIRECTORY="$(dirname "$SCRIPT_DIRECTORY")"
-RUNTIME_DIRECTORY="$HOME/Library/Application Support/BCS VPN/runtime-macos-arm64"
+APPLICATION_BUNDLE="${BCS_VPN_APP_BUNDLE:-$HOME/Applications/BCS VPN.app}"
+RUNTIME_DIRECTORY="$APPLICATION_BUNDLE/Contents/Resources/runtime-macos-arm64"
 OPENCONNECT_EXECUTABLE="$RUNTIME_DIRECTORY/bin/openconnect"
 OCPROXY_EXECUTABLE="$RUNTIME_DIRECTORY/bin/ocproxy"
 OPENCONNECT_PROCESS_ID_FILE="$PROJECT_DIRECTORY/run/openconnect.pid"
