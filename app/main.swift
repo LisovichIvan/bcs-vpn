@@ -3,7 +3,8 @@ import Darwin
 import Foundation
 
 private struct Configuration {
-    let projectDirectory: URL
+    let resourceDirectory: URL
+    let dataDirectory: URL
 
     static func parse(arguments: [String]) -> Configuration {
         var projectDirectoryPath: String?
@@ -28,21 +29,18 @@ private struct Configuration {
             argumentIndex += 2
         }
 
+        let resourceDirectory: URL
         if let projectDirectoryPath {
-            return Configuration(
-                projectDirectory: URL(fileURLWithPath: projectDirectoryPath, isDirectory: true)
-            )
+            resourceDirectory = URL(fileURLWithPath: projectDirectoryPath, isDirectory: true)
+        } else {
+            guard let bundledResourceDirectory = Bundle.main.resourceURL else {
+                fatalError("Missing application Resources directory")
+            }
+            resourceDirectory = bundledResourceDirectory
         }
-
-        guard let bundledProjectDirectoryPath = Bundle.main.object(
-            forInfoDictionaryKey: "BCSProjectDirectory"
-        ) as? String else {
-            fatalError("Missing BCSProjectDirectory in application Info.plist")
-        }
-        return Configuration(projectDirectory: URL(
-            fileURLWithPath: bundledProjectDirectoryPath,
-            isDirectory: true
-        ))
+        let dataDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support/BCS VPN", isDirectory: true)
+        return Configuration(resourceDirectory: resourceDirectory, dataDirectory: dataDirectory)
     }
 }
 
@@ -119,7 +117,7 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
     )
     private let fallbackProxyServer = FallbackProxyServer()
     private lazy var settingsWindowController = SettingsWindowController(
-        projectDirectory: configuration.projectDirectory
+        projectDirectory: configuration.dataDirectory
     )
     private var activeCommand: Process?
     private var fallbackProxyFailure: String?
@@ -132,15 +130,18 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        DiagnosticLogger.info("application.launch begin resourceDirectory=\(configuration.resourceDirectory.path) dataDirectory=\(configuration.dataDirectory.path)")
         NSApplication.shared.setActivationPolicy(.accessory)
         configureMenu()
         do {
             try fallbackProxyServer.start()
         } catch {
             fallbackProxyFailure = error.localizedDescription
+            DiagnosticLogger.error("fallback.start failed error=\(error.localizedDescription)")
             applyStatus(.failed)
             showError(title: "Не удалось запустить fallback SOCKS5", details: error.localizedDescription)
         }
+        DiagnosticLogger.info("application.launch fallbackReady=\(fallbackProxyFailure == nil)")
         refreshStatus()
         statusTimer = Timer.scheduledTimer(
             withTimeInterval: 3,
@@ -177,18 +178,22 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
     }
 
     @objc private func connect() {
+        DiagnosticLogger.info("menu.connect requested")
         runCommand(scriptName: "connect.sh", progressStatus: .connecting)
     }
 
     @objc private func disconnect() {
+        DiagnosticLogger.info("menu.disconnect requested")
         runCommand(scriptName: "disconnect.sh", progressStatus: .disconnecting)
     }
 
     @objc private func openSettings() {
+        DiagnosticLogger.info("menu.settings requested")
         settingsWindowController.open()
     }
 
     @objc private func openLogs() {
+        DiagnosticLogger.info("menu.logs requested")
         settingsWindowController.openLogs()
     }
 
@@ -202,13 +207,16 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
         disconnectMenuItem.isEnabled = false
 
         let process = Process()
-        process.executableURL = configuration.projectDirectory
+        process.executableURL = configuration.resourceDirectory
             .appendingPathComponent("scripts", isDirectory: true)
             .appendingPathComponent(scriptName)
-        process.currentDirectoryURL = configuration.projectDirectory
-        process.environment = ProcessInfo.processInfo.environment
+        process.currentDirectoryURL = configuration.resourceDirectory
+        var environment = ProcessInfo.processInfo.environment
+        environment["BCS_VPN_DATA_DIRECTORY"] = configuration.dataDirectory.path
+        environment["BCS_VPN_APP_BUNDLE"] = Bundle.main.bundlePath
+        process.environment = environment
 
-        let logFile = configuration.projectDirectory
+        let logFile = configuration.dataDirectory
             .appendingPathComponent("run", isDirectory: true)
             .appendingPathComponent("menu-bar.log")
 
@@ -218,6 +226,7 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
             process.standardError = logHandle
             process.terminationHandler = { [weak self] completedProcess in
                 try? logHandle.close()
+                DiagnosticLogger.info("command.complete script=\(scriptName) status=\(completedProcess.terminationStatus)")
                 let output = (try? Self.readCommandLogTail(at: logFile)) ?? ""
                 DispatchQueue.main.async {
                     self?.commandDidFinish(exitCode: completedProcess.terminationStatus, output: output)
@@ -227,6 +236,7 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
             activeCommand = process
             try process.run()
         } catch {
+            DiagnosticLogger.error("command.start failed script=\(scriptName) error=\(error.localizedDescription)")
             activeCommand = nil
             applyStatus(.unavailable)
             showError(title: "Не удалось запустить команду", details: error.localizedDescription)
@@ -328,10 +338,14 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
         let process = Process()
         let standardOutput = Pipe()
         let standardError = Pipe()
-        process.executableURL = configuration.projectDirectory
+        process.executableURL = configuration.resourceDirectory
             .appendingPathComponent("scripts", isDirectory: true)
             .appendingPathComponent("status.sh")
-        process.currentDirectoryURL = configuration.projectDirectory
+        process.currentDirectoryURL = configuration.resourceDirectory
+        var environment = ProcessInfo.processInfo.environment
+        environment["BCS_VPN_DATA_DIRECTORY"] = configuration.dataDirectory.path
+        environment["BCS_VPN_APP_BUNDLE"] = Bundle.main.bundlePath
+        process.environment = environment
         process.standardOutput = standardOutput
         process.standardError = standardError
         process.terminationHandler = { [weak self] completedProcess in

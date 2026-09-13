@@ -3,7 +3,8 @@ set -euo pipefail
 
 SCRIPT_DIRECTORY="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIRECTORY="$(dirname "$SCRIPT_DIRECTORY")"
-RUN_DIRECTORY="$PROJECT_DIRECTORY/run"
+DATA_DIRECTORY="${BCS_VPN_DATA_DIRECTORY:-$PROJECT_DIRECTORY}"
+RUN_DIRECTORY="$DATA_DIRECTORY/run"
 INSTALLATION_DIRECTORY="$HOME/Library/Application Support/BCS VPN"
 APPLICATION_BUNDLE="${BCS_VPN_APP_BUNDLE:-$HOME/Applications/BCS VPN.app}"
 RUNTIME_DIRECTORY="$APPLICATION_BUNDLE/Contents/Resources/runtime-macos-arm64"
@@ -146,7 +147,7 @@ if ! (cd "$RUNTIME_DIRECTORY" && shasum -a 256 -c CHECKSUMS.sha256 >/dev/null); 
 fi
 
 unset OPENCONNECT_URL OPENCONNECT_USER OPENCONNECT_RSA_PIN OPENCONNECT_CERTIFICATE_SHA1 OPENCONNECT_SERVER_CERTIFICATE_PIN
-settings_output="$("$VPN_COMMAND_HELPER" read-settings "$PROJECT_DIRECTORY")"
+settings_output="$("$VPN_COMMAND_HELPER" read-settings "$DATA_DIRECTORY")"
 while IFS=$'\t' read -r setting_key setting_value; do
   case "$setting_key" in
     OPENCONNECT_URL) OPENCONNECT_URL="$setting_value" ;;

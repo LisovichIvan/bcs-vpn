@@ -7,6 +7,26 @@ private struct LogSource {
     let fileURL: URL
 }
 
+private final class SelectableTextField: NSTextField {
+    convenience init(wrappingText string: String) {
+        self.init(labelWithString: string)
+        isEditable = false
+        isSelectable = true
+        isBezeled = false
+        drawsBackground = false
+        usesSingleLineMode = false
+        lineBreakMode = .byWordWrapping
+        maximumNumberOfLines = 0
+    }
+
+    override var acceptsFirstResponder: Bool { true }
+
+    override func mouseDown(with event: NSEvent) {
+        window?.makeFirstResponder(self)
+        super.mouseDown(with: event)
+    }
+}
+
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let settingsStore: VPNSettingsStore
     private let logSources: [LogSource]
@@ -18,6 +38,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let certificateSHA1TextField = NSTextField(string: "")
     private let serverCertificatePinTextField = NSTextField(string: "")
     private let settingsStatusLabel = NSTextField(labelWithString: "")
+    private let readinessStatusLabel = SelectableTextField(wrappingText: "")
+    private let checklistStack = NSStackView()
+    private var checklistStatusLabels: [NSTextField] = []
+    private let checkReadinessButton = NSButton(title: "Проверить готовность", target: nil, action: nil)
     private let launchAtLoginCheckBox = NSButton(
         checkboxWithTitle: "Запускать BCS VPN при входе в macOS",
         target: nil,
@@ -70,6 +94,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func open() {
+        DiagnosticLogger.info("settings.open requested")
         loadSettings()
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
@@ -77,6 +102,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     func openLogs() {
+        DiagnosticLogger.info("logs.open requested")
         if logsWindow == nil {
             configureLogsWindow()
         }
@@ -96,8 +122,9 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func configureSettingsWindow() {
+        DiagnosticLogger.info("settings.window.configure begin")
         let settingsWindow = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 780, height: 560),
+            contentRect: NSRect(x: 0, y: 0, width: 780, height: 760),
             styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
@@ -109,6 +136,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         settingsWindow.center()
         settingsWindow.delegate = self
         window = settingsWindow
+        DiagnosticLogger.info("settings.window.configure complete")
     }
 
     private func configureLogsWindow() {
@@ -128,6 +156,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func makeSettingsView() -> NSView {
+        DiagnosticLogger.info("settings.view.build begin")
         serverURLTextField.placeholderString = "https://fw2.bcs.ru"
         usernameTextField.placeholderString = "Имя пользователя"
         rsaPINTextField.placeholderString = "Постоянный PIN"
@@ -148,10 +177,27 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         formStack.alignment = .leading
         formStack.spacing = 14
 
-        let explanationLabel = NSTextField(wrappingLabelWithString:
-            "Настройки сохраняются в локальном vpn-settings.plist. Изменения используются при следующем подключении. Для переноса на другой Mac экспортируйте профиль, а на новом компьютере импортируйте его и замените учетные данные."
+        let explanationLabel = SelectableTextField(wrappingText:
+            "Порядок настройки после установки. Каждый пункт отмечен статусом; нажмите «Проверить готовность» после изменений. Настройки сохраняются локально в vpn-settings.plist с правами 600."
         )
         explanationLabel.textColor = .secondaryLabelColor
+        explanationLabel.maximumNumberOfLines = 0
+        explanationLabel.isEditable = false
+        explanationLabel.isSelectable = true
+        explanationLabel.isBezeled = false
+        explanationLabel.drawsBackground = false
+        explanationLabel.allowsEditingTextAttributes = false
+
+        readinessStatusLabel.maximumNumberOfLines = 0
+        readinessStatusLabel.textColor = .secondaryLabelColor
+        readinessStatusLabel.isEditable = false
+        readinessStatusLabel.isSelectable = true
+        readinessStatusLabel.isBezeled = false
+        readinessStatusLabel.drawsBackground = false
+        readinessStatusLabel.allowsEditingTextAttributes = false
+        configureChecklist()
+        checkReadinessButton.target = self
+        checkReadinessButton.action = #selector(checkReadiness)
 
         settingsStatusLabel.maximumNumberOfLines = 2
         settingsStatusLabel.lineBreakMode = .byWordWrapping
@@ -177,6 +223,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         transferStack.alignment = .centerY
         transferStack.spacing = 10
 
+        let readinessStack = NSStackView(views: [readinessStatusLabel, NSView(), checkReadinessButton])
+        readinessStack.orientation = .horizontal
+        readinessStack.alignment = .centerY
+        readinessStack.spacing = 12
+        readinessStatusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        checkReadinessButton.setContentHuggingPriority(.required, for: .horizontal)
+
         let buttonStack = NSStackView(views: [transferStack, NSView(), settingsStatusLabel, saveButton])
         let launchAtLoginContainer = NSStackView(views: [launchAtLoginCheckBox, NSView()])
         launchAtLoginContainer.orientation = .horizontal
@@ -189,7 +242,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         saveButton.setContentHuggingPriority(.required, for: .horizontal)
 
         let contentView = NSView()
-        [formStack, explanationLabel, launchAtLoginContainer, buttonStack].forEach {
+        [formStack, explanationLabel, checklistStack, readinessStack, launchAtLoginContainer, buttonStack].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             contentView.addSubview($0)
         }
@@ -200,7 +253,13 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             explanationLabel.topAnchor.constraint(equalTo: formStack.bottomAnchor, constant: 22),
             explanationLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 28),
             explanationLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -28),
-            launchAtLoginContainer.topAnchor.constraint(equalTo: explanationLabel.bottomAnchor, constant: 16),
+            checklistStack.topAnchor.constraint(equalTo: explanationLabel.bottomAnchor, constant: 14),
+            checklistStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 28),
+            checklistStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -28),
+            readinessStack.topAnchor.constraint(equalTo: checklistStack.bottomAnchor, constant: 14),
+            readinessStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 28),
+            readinessStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -28),
+            launchAtLoginContainer.topAnchor.constraint(equalTo: readinessStack.bottomAnchor, constant: 14),
             launchAtLoginContainer.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 28),
             launchAtLoginContainer.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -28),
             buttonStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 28),
@@ -208,7 +267,105 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             buttonStack.topAnchor.constraint(equalTo: launchAtLoginContainer.bottomAnchor, constant: 16),
             buttonStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -24),
         ])
+        DiagnosticLogger.info("settings.view.build complete checklistItems=\(checklistStatusLabels.count)")
         return contentView
+    }
+
+    private func configureChecklist() {
+        checklistStack.orientation = .vertical
+        checklistStack.alignment = .leading
+        checklistStack.spacing = 8
+        let items = [
+            ("Сертификат и RSA", "Клиентский сертификат BCS установлен в Связку ключей; приложение RSA SecurID готово выдавать одноразовый код."),
+            ("Параметры подключения", "Шлюз, пользователь, PIN RSA, SHA-1 сертификата и pin-sha256 сертификата сервера заполнены и сохранены."),
+            ("Прокси Proxifier", "SOCKS5 · 127.0.0.1 · порт 8889 · без авторизации · DNS через прокси."),
+            ("Правила Proxifier", "Порядок: Localhost → Direct; BCS VPN.app → Direct; fw2.bcs.ru → Direct; BCS through Cisco → SOCKS5 127.0.0.1:8889; Default → Direct."),
+            ("Цели BCS", "gitlab.gitlab.bcs.ru, artifactory.gitlab.bcs.ru, confluence.bcs.ru, jira.bcs.ru, apis.tusvc.bcs.ru, *.global.bcs и корпоративные IP."),
+            ("Подключение", "В меню приложения используйте свежий шестизначный код RSA. После успешной проверки можно включить автозапуск."),
+        ]
+        for (index, item) in items.enumerated() {
+            let statusLabel = NSTextField(labelWithString: "○")
+            statusLabel.font = .systemFont(ofSize: 16, weight: .semibold)
+            statusLabel.widthAnchor.constraint(equalToConstant: 22).isActive = true
+            checklistStatusLabels.append(statusLabel)
+
+            let titleLabel = NSTextField(labelWithString: "\(index + 1). \(item.0)")
+            titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
+            let detailsLabel = SelectableTextField(wrappingText: item.1)
+            detailsLabel.textColor = .secondaryLabelColor
+            detailsLabel.maximumNumberOfLines = 0
+            detailsLabel.isEditable = false
+            detailsLabel.isSelectable = true
+            detailsLabel.isBezeled = false
+            detailsLabel.drawsBackground = false
+            detailsLabel.allowsEditingTextAttributes = false
+            let textStack = NSStackView(views: [titleLabel, detailsLabel])
+            textStack.orientation = .vertical
+            textStack.alignment = .leading
+            textStack.spacing = 2
+
+            let row = NSStackView(views: [statusLabel, textStack])
+            row.orientation = .horizontal
+            row.alignment = .top
+            row.spacing = 8
+            row.setContentHuggingPriority(.defaultLow, for: .horizontal)
+            detailsLabel.preferredMaxLayoutWidth = 650
+            checklistStack.addArrangedSubview(row)
+        }
+    }
+
+    @objc private func checkReadiness() {
+        DiagnosticLogger.info("settings.readiness.check begin")
+        var checks: [String] = []
+        let settings = VPNSettings(
+            serverURL: serverURLTextField.stringValue,
+            username: usernameTextField.stringValue,
+            rsaPIN: rsaPINTextField.stringValue,
+            certificateSHA1: certificateSHA1TextField.stringValue,
+            serverCertificatePin: serverCertificatePinTextField.stringValue
+        )
+        do {
+            _ = try settings.validated()
+            checks.append("✓ параметры подключения заполнены")
+        } catch {
+            checks.append("✗ параметры: \(error.localizedDescription)")
+        }
+
+        let runtimeURL = Bundle.main.bundleURL
+            .appendingPathComponent("Contents/Resources/runtime-macos-arm64/bin/openconnect")
+        checks.append(FileManager.default.isExecutableFile(atPath: runtimeURL.path)
+            ? "✓ VPN runtime установлен"
+            : "✗ VPN runtime не найден")
+
+        let proxifierIsRunning = NSWorkspace.shared.runningApplications.contains {
+            $0.localizedName?.localizedCaseInsensitiveCompare("Proxifier") == .orderedSame
+        }
+        checks.append(proxifierIsRunning
+            ? "✓ Proxifier запущен — правила нужно проверить вручную"
+            : "⚠ Proxifier не запущен — настройте его по инструкции выше")
+        checks.append("⚠ сертификат в Keychain и правила Proxifier проверяются при подключении")
+        readinessStatusLabel.stringValue = checks.joined(separator: "\n")
+        readinessStatusLabel.textColor = checks.contains(where: { $0.hasPrefix("✗") })
+            ? .systemRed : .secondaryLabelColor
+        DiagnosticLogger.info("settings.readiness.check complete invalid=\(checks.contains(where: { $0.hasPrefix("✗") })) proxifierRunning=\(proxifierIsRunning)")
+
+        let statuses = [
+            settingsValidated(settings),
+            settingsValidated(settings),
+            proxifierIsRunning,
+            false,
+            false,
+            false,
+        ]
+        for (index, isComplete) in statuses.enumerated() {
+            guard checklistStatusLabels.indices.contains(index) else { continue }
+            checklistStatusLabels[index].stringValue = isComplete ? "✓" : "○"
+            checklistStatusLabels[index].textColor = isComplete ? .systemGreen : .systemOrange
+        }
+    }
+
+    private func settingsValidated(_ settings: VPNSettings) -> Bool {
+        (try? settings.validated()) != nil
     }
 
     private func makeSettingsRow(title: String, textField: NSTextField) -> NSView {
@@ -377,6 +534,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func loadSettings() {
+        DiagnosticLogger.info("settings.load begin path=\(settingsStore.configurationFileURL.path)")
         launchAtLoginCheckBox.state = launchAgentIsInstalled ? .on : .off
         do {
             let settings = try settingsStore.load()
@@ -386,7 +544,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             } else {
                 setSettingsStatus("Файл vpn-settings.plist ещё не создан.", color: .systemOrange)
             }
+            checkReadiness()
+            DiagnosticLogger.info("settings.load complete")
         } catch {
+            DiagnosticLogger.error("settings.load failed error=\(error.localizedDescription)")
             applySettings(.empty)
             setSettingsStatus(error.localizedDescription, color: .systemRed)
             showError(title: "Не удалось загрузить настройки", details: error.localizedDescription)
@@ -402,6 +563,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     @objc private func saveSettings() {
+        DiagnosticLogger.info("settings.save begin")
         let settings = VPNSettings(
             serverURL: serverURLTextField.stringValue,
             username: usernameTextField.stringValue,
@@ -416,7 +578,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 "Сохранено. Изменения применятся при следующем подключении.",
                 color: .systemGreen
             )
+            checkReadiness()
+            DiagnosticLogger.info("settings.save complete")
         } catch {
+            DiagnosticLogger.error("settings.save failed error=\(error.localizedDescription)")
             setSettingsStatus(error.localizedDescription, color: .systemRed)
             showError(title: "Не удалось сохранить настройки", details: error.localizedDescription)
         }
@@ -661,6 +826,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     }
 
     private func showError(title: String, details: String) {
+        DiagnosticLogger.error("ui.alert title=\(title) details=\(details)")
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = title
