@@ -10,9 +10,15 @@ private enum CopyableTextViewTests {
         view.isEditable = false
         view.isSelectable = true
 
-        assertCopy(view, selectedText: "127.0.0.1", usingKeyboard: false)
-        assertCopy(view, selectedText: "SOCKS5 127.0.0.1:8889", usingKeyboard: true)
-        assertCopy(view, selectedText: "строка\nSOCKS5", usingKeyboard: true)
+        assertCopy(view, selectedText: "127.0.0.1", keyboardCharacters: nil)
+        assertCopy(view, selectedText: "SOCKS5 127.0.0.1:8889", keyboardCharacters: "c")
+        assertCopy(view, selectedText: "строка\nSOCKS5", keyboardCharacters: "с")
+        assertCopy(
+            view,
+            selectedText: "третья",
+            keyboardCharacters: "С",
+            modifierFlags: [.command, .capsLock]
+        )
 
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString("unchanged", forType: .string)
@@ -22,29 +28,30 @@ private enum CopyableTextViewTests {
             NSPasteboard.general.string(forType: .string) == "unchanged",
             "Пустое выделение не должно менять буфер обмена"
         )
-        print("CopyableTextView: частичное выделение и ⌘C работают.")
+        print("CopyableTextView: частичное выделение и ⌘C работают в английской и русской раскладках.")
     }
 
     private static func assertCopy(
         _ view: CopyableTextView,
         selectedText: String,
-        usingKeyboard: Bool
+        keyboardCharacters: String?,
+        modifierFlags: NSEvent.ModifierFlags = .command
     ) {
         let range = (view.string as NSString).range(of: selectedText)
         precondition(range.location != NSNotFound, "Тестовый фрагмент не найден")
         view.setSelectedRange(range)
         NSPasteboard.general.clearContents()
 
-        if usingKeyboard {
+        if let keyboardCharacters {
             let event = NSEvent.keyEvent(
                 with: .keyDown,
                 location: .zero,
-                modifierFlags: .command,
+                modifierFlags: modifierFlags,
                 timestamp: 0,
                 windowNumber: 0,
                 context: nil,
-                characters: "c",
-                charactersIgnoringModifiers: "c",
+                characters: keyboardCharacters,
+                charactersIgnoringModifiers: keyboardCharacters,
                 isARepeat: false,
                 keyCode: 8
             )!

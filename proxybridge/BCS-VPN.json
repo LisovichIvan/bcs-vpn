@@ -1,0 +1,62 @@
+{
+  "name": "BCS VPN",
+  "trafficLoggingEnabled": true,
+  "closeToMenuBar": false,
+  "runAtStartup": true,
+  "proxyConfigs": [
+    {
+      "id": "A749BA8D-ACD5-45FA-BF61-85C3F91454B7",
+      "name": "bcs-vpn",
+      "type": "socks5",
+      "host": "127.0.0.1",
+      "port": 8889
+    }
+  ],
+  "proxyRules": [
+    {
+      "name": "BCS VPN processes direct",
+      "processNames": "com.bcs.vpn;bcs-vpn;openconnect;ocproxy",
+      "targetHosts": "*",
+      "targetPorts": "*",
+      "protocol": "BOTH",
+      "action": "DIRECT",
+      "enabled": true
+    },
+    {
+      "name": "Localhost direct",
+      "processNames": "*",
+      "targetHosts": "127.0.0.1;::1",
+      "targetPorts": "*",
+      "protocol": "TCP",
+      "action": "DIRECT",
+      "enabled": true
+    },
+    {
+      "name": "BCS VPN gateways direct",
+      "processNames": "*",
+      "targetHosts": "fwm.bcs.ru;193.142.57.165;fw2.bcs.ru;193.142.56.141",
+      "targetPorts": "*",
+      "protocol": "TCP",
+      "action": "DIRECT",
+      "enabled": true
+    },
+    {
+      "name": "NuGet Artifactory direct",
+      "processNames": "dotnet",
+      "targetHosts": "artifactory.gitlab.bcs.ru;193.142.56.242",
+      "targetPorts": "*",
+      "protocol": "TCP",
+      "action": "DIRECT",
+      "enabled": true
+    },
+    {
+      "name": "BCS through VPN",
+      "processNames": "*",
+      "targetHosts": "gitlab.gitlab.bcs.ru;artifactory.gitlab.bcs.ru;confluence.bcs.ru;jira.bcs.ru;apis.tusvc.bcs.ru;*.global.bcs;193.142.56.242;193.142.56.243;193.142.56.247;172.18.8.20;172.17.174.48",
+      "targetPorts": "*",
+      "protocol": "TCP",
+      "action": "A749BA8D-ACD5-45FA-BF61-85C3F91454B7",
+      "enabled": true
+    }
+  ]
+}

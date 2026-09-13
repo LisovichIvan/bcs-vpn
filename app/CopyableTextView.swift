@@ -14,10 +14,10 @@ final class CopyableTextView: NSTextView {
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        let modifiers = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-        if modifiers == .command,
-           event.charactersIgnoringModifiers?.lowercased() == "c",
-           selectedRange().length > 0 {
+        let shortcutModifiers = event.modifierFlags.intersection([.command, .control, .option])
+        let character = event.charactersIgnoringModifiers?.lowercased()
+        let isCopyKey = event.keyCode == 8 || character == "c" || character == "с"
+        if shortcutModifiers == .command, isCopyKey, selectedRange().length > 0 {
             copy(nil)
             return true
         }
