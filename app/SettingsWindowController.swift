@@ -7,26 +7,6 @@ private struct LogSource {
     let fileURL: URL
 }
 
-private final class SelectableTextField: NSTextField {
-    convenience init(wrappingText string: String) {
-        self.init(labelWithString: string)
-        isEditable = false
-        isSelectable = true
-        isBezeled = false
-        drawsBackground = false
-        usesSingleLineMode = false
-        lineBreakMode = .byWordWrapping
-        maximumNumberOfLines = 0
-    }
-
-    override var acceptsFirstResponder: Bool { true }
-
-    override func mouseDown(with event: NSEvent) {
-        window?.makeFirstResponder(self)
-        super.mouseDown(with: event)
-    }
-}
-
 final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let settingsStore: VPNSettingsStore
     private let logSources: [LogSource]
@@ -38,9 +18,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let certificateSHA1TextField = NSTextField(string: "")
     private let serverCertificatePinTextField = NSTextField(string: "")
     private let settingsStatusLabel = NSTextField(labelWithString: "")
-    private let readinessStatusLabel = SelectableTextField(wrappingText: "")
-    private let checklistStack = NSStackView()
-    private var checklistStatusLabels: [NSTextField] = []
+    private let readinessStatusLabel = NSTextField(wrappingLabelWithString: "")
+    private let instructionTextView = CopyableTextView(frame: .zero)
     private let checkReadinessButton = NSButton(title: "Проверить готовность", target: nil, action: nil)
     private let launchAtLoginCheckBox = NSButton(
         checkboxWithTitle: "Запускать BCS VPN при входе в macOS",
@@ -177,25 +156,26 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         formStack.alignment = .leading
         formStack.spacing = 14
 
-        let explanationLabel = SelectableTextField(wrappingText:
-            "Порядок настройки после установки. Каждый пункт отмечен статусом; нажмите «Проверить готовность» после изменений. Настройки сохраняются локально в vpn-settings.plist с правами 600."
-        )
-        explanationLabel.textColor = .secondaryLabelColor
-        explanationLabel.maximumNumberOfLines = 0
-        explanationLabel.isEditable = false
-        explanationLabel.isSelectable = true
-        explanationLabel.isBezeled = false
-        explanationLabel.drawsBackground = false
-        explanationLabel.allowsEditingTextAttributes = false
+        updateInstruction(statuses: Array(repeating: false, count: 6))
+        instructionTextView.isEditable = false
+        instructionTextView.isSelectable = true
+        instructionTextView.isRichText = false
+        instructionTextView.allowsUndo = false
+        instructionTextView.drawsBackground = false
+        instructionTextView.font = .systemFont(ofSize: 12)
+        instructionTextView.textContainerInset = NSSize(width: 6, height: 6)
+        instructionTextView.textContainer?.widthTracksTextView = true
+        instructionTextView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+
+        let instructionScrollView = NSScrollView()
+        instructionScrollView.borderType = .bezelBorder
+        instructionScrollView.hasVerticalScroller = true
+        instructionScrollView.autohidesScrollers = true
+        instructionScrollView.documentView = instructionTextView
 
         readinessStatusLabel.maximumNumberOfLines = 0
         readinessStatusLabel.textColor = .secondaryLabelColor
-        readinessStatusLabel.isEditable = false
         readinessStatusLabel.isSelectable = true
-        readinessStatusLabel.isBezeled = false
-        readinessStatusLabel.drawsBackground = false
-        readinessStatusLabel.allowsEditingTextAttributes = false
-        configureChecklist()
         checkReadinessButton.target = self
         checkReadinessButton.action = #selector(checkReadiness)
 
@@ -242,7 +222,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         saveButton.setContentHuggingPriority(.required, for: .horizontal)
 
         let contentView = NSView()
-        [formStack, explanationLabel, checklistStack, readinessStack, launchAtLoginContainer, buttonStack].forEach {
+        [formStack, instructionScrollView, readinessStack, launchAtLoginContainer, buttonStack].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             contentView.addSubview($0)
         }
@@ -250,13 +230,11 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             formStack.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 28),
             formStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 28),
             formStack.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor, constant: -28),
-            explanationLabel.topAnchor.constraint(equalTo: formStack.bottomAnchor, constant: 22),
-            explanationLabel.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 28),
-            explanationLabel.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -28),
-            checklistStack.topAnchor.constraint(equalTo: explanationLabel.bottomAnchor, constant: 14),
-            checklistStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 28),
-            checklistStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -28),
-            readinessStack.topAnchor.constraint(equalTo: checklistStack.bottomAnchor, constant: 14),
+            instructionScrollView.topAnchor.constraint(equalTo: formStack.bottomAnchor, constant: 22),
+            instructionScrollView.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 28),
+            instructionScrollView.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -28),
+            instructionScrollView.heightAnchor.constraint(equalToConstant: 390),
+            readinessStack.topAnchor.constraint(equalTo: instructionScrollView.bottomAnchor, constant: 14),
             readinessStack.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 28),
             readinessStack.trailingAnchor.constraint(equalTo: contentView.trailingAnchor, constant: -28),
             launchAtLoginContainer.topAnchor.constraint(equalTo: readinessStack.bottomAnchor, constant: 14),
@@ -267,51 +245,38 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             buttonStack.topAnchor.constraint(equalTo: launchAtLoginContainer.bottomAnchor, constant: 16),
             buttonStack.bottomAnchor.constraint(equalTo: contentView.bottomAnchor, constant: -24),
         ])
-        DiagnosticLogger.info("settings.view.build complete checklistItems=\(checklistStatusLabels.count)")
+        DiagnosticLogger.info("settings.view.build complete instructionTextView=true")
         return contentView
     }
 
-    private func configureChecklist() {
-        checklistStack.orientation = .vertical
-        checklistStack.alignment = .leading
-        checklistStack.spacing = 8
-        let items = [
-            ("Сертификат и RSA", "Клиентский сертификат BCS установлен в Связку ключей; приложение RSA SecurID готово выдавать одноразовый код."),
-            ("Параметры подключения", "Шлюз, пользователь, PIN RSA, SHA-1 сертификата и pin-sha256 сертификата сервера заполнены и сохранены."),
-            ("Прокси Proxifier", "SOCKS5 · 127.0.0.1 · порт 8889 · без авторизации · DNS через прокси."),
-            ("Правила Proxifier", "Порядок: Localhost → Direct; BCS VPN.app → Direct; fw2.bcs.ru → Direct; BCS through Cisco → SOCKS5 127.0.0.1:8889; Default → Direct."),
-            ("Цели BCS", "gitlab.gitlab.bcs.ru, artifactory.gitlab.bcs.ru, confluence.bcs.ru, jira.bcs.ru, apis.tusvc.bcs.ru, *.global.bcs и корпоративные IP."),
-            ("Подключение", "В меню приложения используйте свежий шестизначный код RSA. После успешной проверки можно включить автозапуск."),
-        ]
-        for (index, item) in items.enumerated() {
-            let statusLabel = NSTextField(labelWithString: "○")
-            statusLabel.font = .systemFont(ofSize: 16, weight: .semibold)
-            statusLabel.widthAnchor.constraint(equalToConstant: 22).isActive = true
-            checklistStatusLabels.append(statusLabel)
+    private func updateInstruction(statuses: [Bool]) {
+        let marks = statuses.map { $0 ? "✓" : "○" }
+        instructionTextView.string = """
+        ПОРЯДОК НАСТРОЙКИ ПОСЛЕ УСТАНОВКИ
+        Выделите любой фрагмент мышью и нажмите ⌘C.
 
-            let titleLabel = NSTextField(labelWithString: "\(index + 1). \(item.0)")
-            titleLabel.font = .systemFont(ofSize: 13, weight: .semibold)
-            let detailsLabel = SelectableTextField(wrappingText: item.1)
-            detailsLabel.textColor = .secondaryLabelColor
-            detailsLabel.maximumNumberOfLines = 0
-            detailsLabel.isEditable = false
-            detailsLabel.isSelectable = true
-            detailsLabel.isBezeled = false
-            detailsLabel.drawsBackground = false
-            detailsLabel.allowsEditingTextAttributes = false
-            let textStack = NSStackView(views: [titleLabel, detailsLabel])
-            textStack.orientation = .vertical
-            textStack.alignment = .leading
-            textStack.spacing = 2
+        \(marks[0]) 1. Сертификат и RSA
+        Установите клиентский сертификат BCS в «Связку ключей» и подготовьте приложение RSA SecurID.
 
-            let row = NSStackView(views: [statusLabel, textStack])
-            row.orientation = .horizontal
-            row.alignment = .top
-            row.spacing = 8
-            row.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            detailsLabel.preferredMaxLayoutWidth = 650
-            checklistStack.addArrangedSubview(row)
-        }
+        \(marks[1]) 2. Параметры подключения
+        Заполните шлюз, пользователя, PIN RSA, SHA-1 сертификата и pin-sha256 сертификата сервера. Нажмите «Сохранить».
+
+        \(marks[2]) 3. Прокси Proxifier
+        SOCKS5 · 127.0.0.1 · порт 8889 · без авторизации · DNS через прокси.
+
+        \(marks[3]) 4. Правила Proxifier
+        Localhost → Direct
+        BCS VPN.app → Direct
+        fw2.bcs.ru и 193.142.56.141 → Direct
+        BCS through Cisco → SOCKS5 127.0.0.1:8889
+        Default → Direct
+
+        \(marks[4]) 5. Цели правила BCS through Cisco
+        gitlab.gitlab.bcs.ru; artifactory.gitlab.bcs.ru; confluence.bcs.ru; jira.bcs.ru; apis.tusvc.bcs.ru; *.global.bcs; 193.142.56.242; 193.142.56.243; 172.18.8.20; 172.17.174.48.
+
+        \(marks[5]) 6. Подключение
+        Используйте свежий шестизначный код RSA. После успешной проверки можно включить автозапуск.
+        """
     }
 
     @objc private func checkReadiness() {
@@ -357,11 +322,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
             false,
             false,
         ]
-        for (index, isComplete) in statuses.enumerated() {
-            guard checklistStatusLabels.indices.contains(index) else { continue }
-            checklistStatusLabels[index].stringValue = isComplete ? "✓" : "○"
-            checklistStatusLabels[index].textColor = isComplete ? .systemGreen : .systemOrange
-        }
+        updateInstruction(statuses: statuses)
     }
 
     private func settingsValidated(_ settings: VPNSettings) -> Bool {
