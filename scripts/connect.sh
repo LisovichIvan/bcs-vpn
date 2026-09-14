@@ -10,6 +10,10 @@ APPLICATION_BUNDLE="${BCS_VPN_APP_BUNDLE:-$HOME/Applications/BCS VPN.app}"
 RUNTIME_DIRECTORY="$APPLICATION_BUNDLE/Contents/Resources/runtime-macos-arm64"
 OPENCONNECT_EXECUTABLE="$RUNTIME_DIRECTORY/bin/openconnect"
 OCPROXY_SCRIPT="$SCRIPT_DIRECTORY/run-ocproxy.sh"
+# OpenConnect invokes --script through /bin/sh without quoting the path.
+# Keep a controlled copy at a path without spaces because the app bundle path
+# contains "BCS VPN.app".
+OCPROXY_LAUNCH_SCRIPT="/tmp/bcs-vpn-ocproxy-${UID}.sh"
 OPENCONNECT_PROCESS_ID_FILE="$RUN_DIRECTORY/openconnect.pid"
 OPENCONNECT_START_TIME_FILE="$RUN_DIRECTORY/openconnect.start-time"
 OCPROXY_PROCESS_ID_FILE="$RUN_DIRECTORY/ocproxy.pid"
@@ -238,6 +242,9 @@ scutil --dns > "$RUN_DIRECTORY/network-dns.before"
 : > "$OCPROXY_LOG_FILE"
 chmod 600 "$OPENCONNECT_LOG_FILE"
 chmod 600 "$OCPROXY_LOG_FILE"
+rm -f "$OCPROXY_LAUNCH_SCRIPT"
+cp "$OCPROXY_SCRIPT" "$OCPROXY_LAUNCH_SCRIPT"
+chmod 700 "$OCPROXY_LAUNCH_SCRIPT"
 
 echo "Запуск OpenConnect в пользовательском режиме. Маршруты и DNS macOS не изменяются."
 trap '' INT TERM
@@ -261,7 +268,7 @@ trap '' INT TERM
   --no-proxy \
   --certificate="$IDENTITY_PEM_FILE" \
   --script-tun \
-  --script="$OCPROXY_SCRIPT" \
+  --script="$OCPROXY_LAUNCH_SCRIPT" \
   --reconnect-timeout=86400 \
   --passwd-on-stdin \
   "$OPENCONNECT_URL" \

@@ -13,6 +13,7 @@ OPENCONNECT_PROCESS_ID_FILE="$RUN_DIRECTORY/openconnect.pid"
 OPENCONNECT_START_TIME_FILE="$RUN_DIRECTORY/openconnect.start-time"
 OCPROXY_PROCESS_ID_FILE="$RUN_DIRECTORY/ocproxy.pid"
 OCPROXY_START_TIME_FILE="$RUN_DIRECTORY/ocproxy.start-time"
+OCPROXY_LAUNCH_SCRIPT="/tmp/bcs-vpn-ocproxy-${UID}.sh"
 LIFECYCLE_LOCK_FILE="$INSTALLATION_DIRECTORY/lifecycle.lock"
 
 umask 077
@@ -69,7 +70,8 @@ cleanup_temporary_files() {
     "$RUN_DIRECTORY/client-identity.pem" \
     "$RUN_DIRECTORY/selected-client-identity.pem" \
     "$RUN_DIRECTORY/certificate-password" \
-    "$RUN_DIRECTORY/vpn-passcode"
+    "$RUN_DIRECTORY/vpn-passcode" \
+    "$OCPROXY_LAUNCH_SCRIPT"
 }
 
 if [[ ! -f "$OPENCONNECT_PROCESS_ID_FILE" ]]; then

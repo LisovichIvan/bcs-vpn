@@ -207,9 +207,13 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
         disconnectMenuItem.isEnabled = false
 
         let process = Process()
-        process.executableURL = configuration.resourceDirectory
+        let scriptURL = configuration.resourceDirectory
             .appendingPathComponent("scripts", isDirectory: true)
             .appendingPathComponent(scriptName)
+        // Launch bash explicitly. Process.run() can report ENOENT when a
+        // bundled script is launched directly through its env-based shebang.
+        process.executableURL = URL(fileURLWithPath: "/bin/bash", isDirectory: false)
+        process.arguments = [scriptURL.path]
         process.currentDirectoryURL = configuration.resourceDirectory
         var environment = ProcessInfo.processInfo.environment
         environment["BCS_VPN_DATA_DIRECTORY"] = configuration.dataDirectory.path
@@ -244,6 +248,12 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
     }
 
     private func openCommandLog(at fileURL: URL) throws -> FileHandle {
+        // The installed app keeps runtime data under Application Support;
+        // unlike the source checkout, its run directory may not exist yet.
+        try FileManager.default.createDirectory(
+            at: fileURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
         let openFlags = O_WRONLY | O_APPEND | O_NONBLOCK | O_NOFOLLOW
         var fileDescriptor = fileURL.path.withCString {
             Darwin.open($0, openFlags)
@@ -338,9 +348,11 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
         let process = Process()
         let standardOutput = Pipe()
         let standardError = Pipe()
-        process.executableURL = configuration.resourceDirectory
+        let statusScriptURL = configuration.resourceDirectory
             .appendingPathComponent("scripts", isDirectory: true)
             .appendingPathComponent("status.sh")
+        process.executableURL = URL(fileURLWithPath: "/bin/bash", isDirectory: false)
+        process.arguments = [statusScriptURL.path]
         process.currentDirectoryURL = configuration.resourceDirectory
         var environment = ProcessInfo.processInfo.environment
         environment["BCS_VPN_DATA_DIRECTORY"] = configuration.dataDirectory.path
