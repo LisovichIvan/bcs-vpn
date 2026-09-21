@@ -105,6 +105,14 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
     private let statusMenuItem = NSMenuItem(title: "Статус: проверка", action: nil, keyEquivalent: "")
     private let connectMenuItem = NSMenuItem(title: "Подключить", action: #selector(connect), keyEquivalent: "")
     private let disconnectMenuItem = NSMenuItem(title: "Отключить", action: #selector(disconnect), keyEquivalent: "")
+    private let okdStatusMenuItem = NSMenuItem(title: "OKD: отключён", action: nil, keyEquivalent: "")
+    private let okdConnectMenuItem = NSMenuItem(title: "Подключить OKD Proxy", action: #selector(connectOKD), keyEquivalent: "")
+    private let okdDisconnectMenuItem = NSMenuItem(title: "Отключить OKD Proxy", action: #selector(disconnectOKD), keyEquivalent: "")
+    private let okdSettingsMenuItem = NSMenuItem(
+        title: "Настройки OKD Proxy…",
+        action: #selector(openOKDSettings),
+        keyEquivalent: ""
+    )
     private let settingsMenuItem = NSMenuItem(
         title: "Настройки…",
         action: #selector(openSettings),
@@ -116,6 +124,13 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
         keyEquivalent: ""
     )
     private let fallbackProxyServer = FallbackProxyServer()
+    private lazy var okdProxyManager = OKDProxyManager(
+        resourceDirectory: configuration.resourceDirectory,
+        dataDirectory: configuration.dataDirectory
+    )
+    private lazy var okdSettingsWindowController = OKDProxySettingsWindowController(
+        dataDirectory: configuration.dataDirectory
+    )
     private lazy var settingsWindowController = SettingsWindowController(
         projectDirectory: configuration.dataDirectory
     )
@@ -127,6 +142,10 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
     init(configuration: Configuration) {
         self.configuration = configuration
         super.init()
+    }
+
+    func applicationWillTerminate(_ notification: Notification) {
+        okdProxyManager.stop()
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
@@ -146,7 +165,10 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
         statusTimer = Timer.scheduledTimer(
             withTimeInterval: 3,
             repeats: true,
-            block: { [weak self] _ in self?.refreshStatus() }
+            block: { [weak self] _ in
+                self?.refreshStatus()
+                self?.refreshOKDStatus()
+            }
         )
     }
 
@@ -156,6 +178,9 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
         statusMenuItem.isEnabled = false
         connectMenuItem.target = self
         disconnectMenuItem.target = self
+        okdConnectMenuItem.target = self
+        okdDisconnectMenuItem.target = self
+        okdSettingsMenuItem.target = self
         settingsMenuItem.target = self
         logsMenuItem.target = self
 
@@ -163,6 +188,12 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
         menu.addItem(.separator())
         menu.addItem(connectMenuItem)
         menu.addItem(disconnectMenuItem)
+        menu.addItem(.separator())
+        okdStatusMenuItem.isEnabled = false
+        menu.addItem(okdStatusMenuItem)
+        menu.addItem(okdConnectMenuItem)
+        menu.addItem(okdDisconnectMenuItem)
+        menu.addItem(okdSettingsMenuItem)
         menu.addItem(.separator())
         menu.addItem(settingsMenuItem)
         menu.addItem(logsMenuItem)
@@ -175,6 +206,7 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
 
         statusItem.menu = menu
         applyStatus(.checking)
+        applyOKDStatus(.stopped)
     }
 
     @objc private func connect() {
@@ -185,6 +217,29 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
     @objc private func disconnect() {
         DiagnosticLogger.info("menu.disconnect requested")
         runCommand(scriptName: "disconnect.sh", progressStatus: .disconnecting)
+    }
+
+    @objc private func connectOKD() {
+        DiagnosticLogger.info("menu.okd.connect requested")
+        do {
+            try okdProxyManager.start()
+            applyOKDStatus(okdProxyManager.status)
+        } catch {
+            okdProxyManager.stop()
+            applyOKDStatus(.failed)
+            showError(title: "Не удалось запустить OKD Proxy", details: error.localizedDescription)
+        }
+    }
+
+    @objc private func disconnectOKD() {
+        DiagnosticLogger.info("menu.okd.disconnect requested")
+        okdProxyManager.stop()
+        applyOKDStatus(okdProxyManager.status)
+    }
+
+    @objc private func openOKDSettings() {
+        DiagnosticLogger.info("menu.okd.settings requested")
+        okdSettingsWindowController.open()
     }
 
     @objc private func openSettings() {
@@ -333,6 +388,17 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
             title: "Команда VPN завершилась с ошибкой",
             details: details.isEmpty ? "Код завершения: \(exitCode)" : details
         )
+    }
+
+    private func refreshOKDStatus() {
+        okdProxyManager.refreshStatus()
+        applyOKDStatus(okdProxyManager.status)
+    }
+
+    private func applyOKDStatus(_ status: OKDProxyStatus) {
+        okdStatusMenuItem.title = status.title
+        okdConnectMenuItem.isEnabled = status == .stopped || status == .failed
+        okdDisconnectMenuItem.isEnabled = status == .starting || status == .connected || status == .stopping || status == .failed
     }
 
     private func refreshStatus() {

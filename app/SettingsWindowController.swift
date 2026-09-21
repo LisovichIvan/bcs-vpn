@@ -32,6 +32,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
     private let logTextView = NSTextView(frame: .zero)
     private let openLogButton = NSButton(title: "Открыть файл", target: nil, action: nil)
     private let clearLogButton = NSButton(title: "Очистить", target: nil, action: nil)
+    private let openLogsFromSettingsButton = NSButton(title: "Журналы…", target: nil, action: nil)
     private let importSettingsButton = NSButton(title: "Импортировать…", target: nil, action: nil)
     private let exportSettingsButton = NSButton(title: "Экспортировать…", target: nil, action: nil)
     private var logsWindow: NSWindow?
@@ -57,6 +58,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
                 title: "ocproxy",
                 fileURL: runDirectory.appendingPathComponent("ocproxy.log", isDirectory: false)
             ),
+            LogSource(
+                title: "OKD Proxy",
+                fileURL: runDirectory.appendingPathComponent("okd-proxy.log", isDirectory: false)
+            ),
         ]
 
         super.init(window: nil)
@@ -80,7 +85,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         NSApplication.shared.activate(ignoringOtherApps: true)
     }
 
-    func openLogs() {
+    @objc func openLogs() {
         DiagnosticLogger.info("logs.open requested")
         if logsWindow == nil {
             configureLogsWindow()
@@ -193,6 +198,8 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         saveButton.keyEquivalent = "\r"
         saveButton.bezelStyle = .rounded
 
+        openLogsFromSettingsButton.target = self
+        openLogsFromSettingsButton.action = #selector(openLogs)
         importSettingsButton.target = self
         importSettingsButton.action = #selector(importSettings)
         exportSettingsButton.target = self
@@ -210,7 +217,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
         readinessStatusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
         checkReadinessButton.setContentHuggingPriority(.required, for: .horizontal)
 
-        let buttonStack = NSStackView(views: [transferStack, NSView(), settingsStatusLabel, saveButton])
+        let buttonStack = NSStackView(views: [transferStack, openLogsFromSettingsButton, NSView(), settingsStatusLabel, saveButton])
         let launchAtLoginContainer = NSStackView(views: [launchAtLoginCheckBox, NSView()])
         launchAtLoginContainer.orientation = .horizontal
         launchAtLoginContainer.alignment = .centerY

@@ -21,6 +21,7 @@ Proxifier отправляет выбранные BCS-домены в посто
 - прямое соединение при недоступном VPN без изменения правил Proxifier;
 - аутентификация клиентским сертификатом и одноразовым кодом RSA SecurID;
 - просмотр настроек, состояния и журналов из приложения;
+- OKD Proxy: поиск Running pod через `oc` и локальный port-forward нескольких портов;
 - включение и выключение автозапуска через чекбокс в настройках;
 - переносимый OpenConnect и ocproxy с проверкой контрольных сумм;
 - проверка неизменности системных маршрутов, DNS и сетевых интерфейсов.
@@ -175,6 +176,21 @@ security find-certificate -c "Имя владельца сертификата" 
 Команда создаёт `~/Applications/BCS VPN.app` и не управляет LaunchAgent.
 Выберите приложение в прямом правиле Proxifier. Автозапуск включается чекбоксом
 в настройках приложения; VPN при этом должен быть отключён.
+
+### OKD Proxy
+
+В меню приложения доступны `Настройки OKD Proxy…`, `Подключить OKD Proxy` и
+`Отключить OKD Proxy`. В настройках задаются HTTPS-адрес кластера, token или пара логин/пароль,
+namespace, selector pod и список TCP-портов. Логин и пароль сохраняются и
+используются при следующих подключениях. Модуль через `oc` выбирает первый
+Running pod по selector и пробрасывает порты на `127.0.0.1`. Если pod или
+`oc port-forward` завершается, поиск и проброс запускаются заново.
+
+Учётные данные OKD хранятся отдельно в `~/Library/Application Support/BCS VPN/okd-proxy-settings.plist`
+с правами 600. Во время работы token либо логин и пароль передаются `oc` через временный
+kubeconfig, а не через аргументы командной строки. Для запуска нужен OpenShift CLI `oc` в
+`/opt/homebrew/bin`, `/usr/local/bin` или `/usr/bin`. Сертификат OKD проверяется
+обычным TLS; отключение проверки сертификата не включается.
 
 Чекбокс «Запускать BCS VPN при входе в macOS» в окне настроек добавляет или
 удаляет `~/Library/LaunchAgents/com.bcs.vpn.plist`. LaunchAgent запускает
@@ -346,6 +362,7 @@ Fallback-прокси обслуживает до 512 одновременных
 | `./scripts/install-runtime.sh` | Устаревшая команда: runtime входит в приложение |
 | `./scripts/connect.sh` | Запросить новый код RSA SecurID и подключить VPN |
 | `./scripts/disconnect.sh` | Безопасно остановить OpenConnect и ocproxy |
+| `./scripts/okd-proxy.sh <plist>` | Запустить OKD pod port-forward из runtime-конфигурации |
 | `./scripts/status.sh` | Вывести `connected`, `connecting`, `disconnected`, `failed` или `unavailable` |
 | `./scripts/set-rsa-pin.sh` | Безопасно записать постоянный PIN в локальный Property List |
 | `./scripts/check-vpn.sh [домен]` | Проверить прокси, доступ и сетевую изоляцию |
@@ -358,6 +375,7 @@ Fallback-прокси обслуживает до 512 одновременных
 | Путь | Содержимое |
 | --- | --- |
 | `app/` | Исходники приложения, окна настроек, Swift-helper и шаблоны plist |
+| `scripts/okd-proxy.sh` | Цикл поиска pod и `oc port-forward` для OKD Proxy |
 | `fallback-proxy/` | Реализация и тестовые помощники fallback SOCKS5 |
 | `scripts/` | Установка, управление подключением, диагностика и тесты |
 | `vendor/macos-arm64/` | Переносимые OpenConnect, ocproxy, библиотеки, лицензии и контрольные суммы |
@@ -377,7 +395,12 @@ bash -n scripts/*.sh
 swiftc -warnings-as-errors -typecheck \
   app/main.swift \
   app/VPNSettingsStore.swift \
+  app/OKDProxySettings.swift \
+  app/OKDProxyManager.swift \
+  app/OKDProxySettingsWindowController.swift \
   app/SettingsWindowController.swift \
+  app/DiagnosticLogger.swift \
+  app/CopyableTextView.swift \
   fallback-proxy/FallbackProxyServer.swift
 ./scripts/test-fallback-proxy.sh
 ./scripts/test-vpn-settings.sh
