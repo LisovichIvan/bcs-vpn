@@ -71,6 +71,7 @@ cleanup_temporary_files() {
     "$RUN_DIRECTORY/selected-client-identity.pem" \
     "$RUN_DIRECTORY/certificate-password" \
     "$RUN_DIRECTORY/vpn-passcode" \
+    "$RUN_DIRECTORY/vpn-session-expiration" \
     "$OCPROXY_LAUNCH_SCRIPT"
 }
 

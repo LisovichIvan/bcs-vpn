@@ -101,8 +101,9 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
     private static let maximumCommandLogBytes: UInt64 = 256 * 1_024
 
     private let configuration: Configuration
-    private let statusItem = NSStatusBar.system.statusItem(withLength: 26)
+    private let statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
     private let statusMenuItem = NSMenuItem(title: "Статус: проверка", action: nil, keyEquivalent: "")
+    private let sessionTimeMenuItem = NSMenuItem(title: "До отключения: время неизвестно", action: nil, keyEquivalent: "")
     private let connectMenuItem = NSMenuItem(title: "Подключить", action: #selector(connect), keyEquivalent: "")
     private let disconnectMenuItem = NSMenuItem(title: "Отключить", action: #selector(disconnect), keyEquivalent: "")
     private let okdStatusMenuItem = NSMenuItem(title: "OKD: отключён", action: nil, keyEquivalent: "")
@@ -162,14 +163,13 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
         }
         DiagnosticLogger.info("application.launch fallbackReady=\(fallbackProxyFailure == nil)")
         refreshStatus()
-        statusTimer = Timer.scheduledTimer(
-            withTimeInterval: 3,
-            repeats: true,
-            block: { [weak self] _ in
-                self?.refreshStatus()
-                self?.refreshOKDStatus()
-            }
-        )
+        let timer = Timer(timeInterval: 3, repeats: true) { [weak self] _ in
+            self?.refreshStatus()
+            self?.refreshOKDStatus()
+        }
+        // Keep the status and countdown current while the menu is open.
+        RunLoop.main.add(timer, forMode: .common)
+        statusTimer = timer
     }
 
     private func configureMenu() {
@@ -185,6 +185,8 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
         logsMenuItem.target = self
 
         menu.addItem(statusMenuItem)
+        sessionTimeMenuItem.isEnabled = false
+        menu.addItem(sessionTimeMenuItem)
         menu.addItem(.separator())
         menu.addItem(connectMenuItem)
         menu.addItem(disconnectMenuItem)
@@ -482,6 +484,15 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
     }
 
     private func applyStatus(_ status: ConnectionStatus) {
+        let expirationFile = configuration.dataDirectory
+            .appendingPathComponent("run", isDirectory: true)
+            .appendingPathComponent("vpn-session-expiration")
+        let expiration = status == .connected
+            ? try? VPNSessionTime.readExpiration(at: expirationFile)
+            : nil
+        let sessionTime = expiration.map { VPNSessionTime.display(expiration: $0, now: Date()) }
+        sessionTimeMenuItem.isHidden = status != .connected
+        sessionTimeMenuItem.title = sessionTime?.menuTitle ?? "До отключения: время неизвестно"
         statusMenuItem.title = status.title
         connectMenuItem.isEnabled = activeCommand == nil && (status == .disconnected || status == .failed)
         disconnectMenuItem.isEnabled = activeCommand == nil && (
@@ -499,8 +510,17 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
             image?.isTemplate = false
             button.imageScaling = .scaleProportionallyUpOrDown
             button.image = image
-            button.title = image == nil ? "VPN" : ""
-            button.toolTip = "BCS VPN: \(status.title.replacingOccurrences(of: "Статус: ", with: ""))"
+            button.imagePosition = .imageLeading
+            button.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
+            button.title = sessionTime.map { " \($0.countdown)" } ?? (image == nil ? "VPN" : "")
+            var toolTip = "BCS VPN: \(status.title.replacingOccurrences(of: "Статус: ", with: ""))"
+            if status == .connected {
+                toolTip += "\n\(sessionTimeMenuItem.title)"
+                if let expiration {
+                    toolTip += "\nОкончание сессии: \(DateFormatter.localizedString(from: expiration, dateStyle: .short, timeStyle: .medium))"
+                }
+            }
+            button.toolTip = toolTip
         }
     }
 

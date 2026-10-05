@@ -9,6 +9,9 @@ STATUS_FILE="$RUN_DIRECTORY/okd-proxy.status"
 CONFIG_FILE="${1:-}"
 KUBECONFIG_FILE="$RUN_DIRECTORY/okd-proxy-kubeconfig"
 CHILD_PID=""
+PARENT_MONITOR_PID=""
+PARENT_PROCESS_ID="$PPID"
+FORWARD_OUTPUT_DIRECTORY=""
 STOP_REQUESTED=false
 
 umask 077
@@ -20,16 +23,44 @@ write_status() {
 }
 
 cleanup() {
+  trap - EXIT INT TERM
   STOP_REQUESTED=true
+  if [[ -n "$PARENT_MONITOR_PID" ]]; then
+    kill -TERM "$PARENT_MONITOR_PID" 2>/dev/null || true
+    wait "$PARENT_MONITOR_PID" 2>/dev/null || true
+  fi
   if [[ -n "$CHILD_PID" ]] && kill -0 "$CHILD_PID" 2>/dev/null; then
     kill -TERM "$CHILD_PID" 2>/dev/null || true
     wait "$CHILD_PID" 2>/dev/null || true
   fi
   rm -f "$KUBECONFIG_FILE"
+  if [[ -n "$FORWARD_OUTPUT_DIRECTORY" ]]; then
+    rm -f "$FORWARD_OUTPUT_DIRECTORY/output" "$FORWARD_OUTPUT_DIRECTORY/help" "$FORWARD_OUTPUT_DIRECTORY/pods"
+    rmdir "$FORWARD_OUTPUT_DIRECTORY"
+  fi
   write_status stopped
 }
 trap cleanup EXIT
 trap 'exit 143' INT TERM
+write_status starting
+
+# LaunchAgent may terminate the app without running its AppKit shutdown hook.
+# Keep the wrapper tied to the original parent, including PID reuse checks.
+WRAPPER_PROCESS_ID="$$"
+WRAPPER_START_TIME="$(ps -p "$WRAPPER_PROCESS_ID" -o lstart=)"
+PARENT_START_TIME="$(ps -p "$PARENT_PROCESS_ID" -o lstart= 2>/dev/null || true)"
+monitor_parent() {
+  while [[ "$(ps -p "$WRAPPER_PROCESS_ID" -o lstart= 2>/dev/null)" == "$WRAPPER_START_TIME" ]]; do
+    if [[ -z "$PARENT_START_TIME" || "$(ps -p "$PARENT_PROCESS_ID" -o lstart= 2>/dev/null)" != "$PARENT_START_TIME" ]]; then
+      echo "Родительский процесс завершился; остановка OKD Proxy." >&2
+      kill -TERM "$WRAPPER_PROCESS_ID" 2>/dev/null || true
+      return
+    fi
+    sleep 1
+  done
+}
+monitor_parent &
+PARENT_MONITOR_PID=$!
 
 if [[ -z "$CONFIG_FILE" || ! -f "$CONFIG_FILE" ]]; then
   write_status failed
@@ -68,6 +99,33 @@ if [[ -z "$OC_EXECUTABLE" || ! -x "$OC_EXECUTABLE" ]]; then
   write_status failed
   echo "Не найден исполняемый файл oc." >&2
   exit 1
+fi
+
+FORWARD_OUTPUT_DIRECTORY="$(mktemp -d "$RUN_DIRECTORY/okd-proxy-output.XXXXXX")"
+mkfifo "$FORWARD_OUTPUT_DIRECTORY/output"
+
+# A foreground oc inside command substitution delays Bash's TERM trap.
+# Track discovery/help like port-forward and wait with an interruptible builtin.
+run_oc_to_file() {
+  local output_file="$1"
+  shift
+  local child_status=0
+  "$OC_EXECUTABLE" "$@" > "$output_file" &
+  CHILD_PID=$!
+  wait "$CHILD_PID" || child_status=$?
+  CHILD_PID=""
+  return "$child_status"
+}
+
+# Older oc versions bind to localhost by default but do not accept --address.
+PORT_FORWARD_OPTIONS=(--namespace "$OKD_NAMESPACE")
+if ! run_oc_to_file "$FORWARD_OUTPUT_DIRECTORY/help" port-forward --help; then
+  write_status failed
+  echo "Не удалось проверить параметры oc port-forward." >&2
+  exit 1
+fi
+if grep -q -- '--address' "$FORWARD_OUTPUT_DIRECTORY/help"; then
+  PORT_FORWARD_OPTIONS+=(--address 127.0.0.1)
 fi
 
 yaml_quote() {
@@ -110,13 +168,15 @@ chmod 600 "$KUBECONFIG_FILE"
 
 while true; do
   write_status starting
-  pod="$($OC_EXECUTABLE --kubeconfig="$KUBECONFIG_FILE" get pods \
+  pod=""
+  if run_oc_to_file "$FORWARD_OUTPUT_DIRECTORY/pods" --kubeconfig="$KUBECONFIG_FILE" get pods \
     --namespace "$OKD_NAMESPACE" \
     --selector "$OKD_SELECTOR" \
     --field-selector=status.phase=Running \
     --output 'custom-columns=POD:.metadata.name' \
-    --no-headers 2>>"$RUN_DIRECTORY/okd-proxy.log" \
-    | awk 'NF { print $1; exit }' || true)"
+    --no-headers; then
+    pod="$(awk 'NF { print $1; exit }' "$FORWARD_OUTPUT_DIRECTORY/pods")"
+  fi
 
   if [[ -z "$pod" ]]; then
     echo "Running pod не найден; повтор через 5 секунд." >&2
@@ -125,15 +185,35 @@ while true; do
   fi
 
   echo "Port-forward к pod $pod: ${FORWARD_PORTS[*]}"
-  write_status connected
-  set +e
+  ready_port_count=0
+  ready_ports=()
   "$OC_EXECUTABLE" --kubeconfig="$KUBECONFIG_FILE" port-forward \
-    --address 127.0.0.1 --namespace "$OKD_NAMESPACE" "$pod" "${FORWARD_PORTS[@]}" &
+    "${PORT_FORWARD_OPTIONS[@]}" "$pod" "${FORWARD_PORTS[@]}" \
+    > "$FORWARD_OUTPUT_DIRECTORY/output" 2>&1 &
   CHILD_PID=$!
+  # Read this attempt's output directly: old readiness messages cannot mark a
+  # retry as connected. All requested IPv4 listeners must be confirmed.
+  while IFS= read -r output_line || [[ -n "$output_line" ]]; do
+    printf '%s\n' "$output_line"
+    if [[ "$output_line" =~ ^Forwarding\ from\ 127\.0\.0\.1:([0-9]+)\ -\>\  ]]; then
+      ready_port="${BASH_REMATCH[1]}"
+      for port_index in "${!FORWARD_PORTS[@]}"; do
+        if [[ "$ready_port" == "${FORWARD_PORTS[$port_index]}" && "${ready_ports[$port_index]:-}" != true ]]; then
+          ready_ports[$port_index]=true
+          ready_port_count=$((ready_port_count + 1))
+        fi
+      done
+      if [[ "$ready_port_count" -eq "${#FORWARD_PORTS[@]}" ]] && kill -0 "$CHILD_PID" 2>/dev/null; then
+        write_status connected
+      fi
+    fi
+  done < "$FORWARD_OUTPUT_DIRECTORY/output"
+  set +e
   wait "$CHILD_PID"
   child_status=$?
   CHILD_PID=""
   set -e
+  write_status starting
 
   $STOP_REQUESTED && exit 0
   echo "oc port-forward завершился (код $child_status); повтор через 2 секунды." >&2

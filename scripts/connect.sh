@@ -219,7 +219,8 @@ rm -f \
   "$OCPROXY_PROCESS_ID_FILE" \
   "$OCPROXY_START_TIME_FILE" \
   "$OPENCONNECT_PROCESS_ID_FILE" \
-  "$OPENCONNECT_START_TIME_FILE"
+  "$OPENCONNECT_START_TIME_FILE" \
+  "$RUN_DIRECTORY/vpn-session-expiration"
 
 certificate_password="$(/usr/bin/openssl rand -hex 24)"
 printf '%s\n' "$certificate_password" > "$CERTIFICATE_PASSWORD_FILE"
