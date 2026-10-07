@@ -508,11 +508,12 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
                 accessibilityDescription: status.title
             )?.withSymbolConfiguration(symbolConfiguration)
             image?.isTemplate = false
-            button.imageScaling = .scaleProportionallyUpOrDown
-            button.image = image
-            button.imagePosition = .imageLeading
-            button.font = NSFont.monospacedDigitSystemFont(ofSize: NSFont.systemFontSize, weight: .regular)
-            button.title = sessionTime.map { " \($0.countdown)" } ?? (image == nil ? "VPN" : "")
+            let statusImage = sessionTime.map { Self.statusImage(symbol: image, sessionTime: $0) } ?? image
+            button.imageScaling = .scaleNone
+            button.image = statusImage
+            button.imagePosition = statusImage == nil ? .noImage : .imageOnly
+            button.title = statusImage == nil ? "VPN" : ""
+            statusItem.length = statusImage.map { $0.size.width + 12 } ?? NSStatusItem.variableLength
             var toolTip = "BCS VPN: \(status.title.replacingOccurrences(of: "Статус: ", with: ""))"
             if status == .connected {
                 toolTip += "\n\(sessionTimeMenuItem.title)"
@@ -521,7 +522,30 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
                 }
             }
             button.toolTip = toolTip
+            button.setAccessibilityLabel(toolTip)
         }
+    }
+
+    private static func statusImage(symbol: NSImage?, sessionTime: VPNSessionTimeDisplay) -> NSImage {
+        let paragraphStyle = NSMutableParagraphStyle()
+        paragraphStyle.alignment = .center
+        paragraphStyle.minimumLineHeight = 10
+        paragraphStyle.maximumLineHeight = 10
+        let text = NSAttributedString(string: sessionTime.statusItemTitle, attributes: [
+            .font: NSFont.monospacedDigitSystemFont(ofSize: 9, weight: .medium),
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: paragraphStyle
+        ])
+        let textWidth = ceil(text.size().width)
+        let symbolWidth: CGFloat = symbol == nil ? 0 : 18
+        let textOrigin = symbolWidth == 0 ? 0 : symbolWidth + 3
+        let image = NSImage(size: NSSize(width: textOrigin + textWidth, height: 20), flipped: false) { _ in
+            symbol?.draw(in: NSRect(x: 0, y: 1, width: symbolWidth, height: 18))
+            text.draw(in: NSRect(x: textOrigin, y: 0, width: textWidth, height: 20))
+            return true
+        }
+        image.isTemplate = false
+        return image
     }
 
     private func showError(title: String, details: String) {

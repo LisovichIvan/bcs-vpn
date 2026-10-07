@@ -16,9 +16,11 @@ private enum VPNSessionTimeTests {
         }
         for (seconds, expected) in [(3600.0, "01:00"), (3599.0, "01:00"), (60.1, "00:02"),
                                     (60.0, "00:01"), (0.1, "00:01"), (0.0, "00:00"),
-                                    (-60.0, "00:00"), (90_000.0, "25:00")] {
+                                    (-60.0, "00:00"), (90_000.0, "25:00"),
+                                    (359_940.0, "99:59"), (360_000.0, "100:00")] {
             let display = VPNSessionTime.display(expiration: now.addingTimeInterval(seconds), now: now)
             precondition(display.countdown == expected, "Неверный отсчёт для \(seconds): \(display.countdown)")
+            precondition(display.statusItemTitle == expected.replacingOccurrences(of: ":", with: "\n"))
             precondition(display.menuTitle == (seconds <= 0 ? "Лимит сессии истёк" : "До отключения: \(expected)"))
         }
         let deadline = now.addingTimeInterval(3600)

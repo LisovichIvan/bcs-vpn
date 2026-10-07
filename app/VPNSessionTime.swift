@@ -3,6 +3,7 @@ import Foundation
 
 struct VPNSessionTimeDisplay {
     let countdown: String
+    let statusItemTitle: String
     let menuTitle: String
 }
 
@@ -46,9 +47,12 @@ enum VPNSessionTime {
 
     static func display(expiration: Date, now: Date) -> VPNSessionTimeDisplay {
         let remainingMinutes = Int(ceil(max(0, expiration.timeIntervalSince(now)) / 60))
-        let countdown = String(format: "%02d:%02d", remainingMinutes / 60, remainingMinutes % 60)
+        let hours = String(format: "%02d", remainingMinutes / 60)
+        let minutes = String(format: "%02d", remainingMinutes % 60)
+        let countdown = "\(hours):\(minutes)"
         return VPNSessionTimeDisplay(
             countdown: countdown,
+            statusItemTitle: "\(hours)\n\(minutes)",
             menuTitle: remainingMinutes == 0
                 ? "Лимит сессии истёк"
                 : "До отключения: \(countdown)"
