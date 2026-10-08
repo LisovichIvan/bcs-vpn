@@ -11,8 +11,9 @@ mkdir -p "$TEST_DIRECTORY"
 trap 'rm -rf "$TEST_DIRECTORY"' EXIT
 
 swiftc -warnings-as-errors -parse-as-library \
-  "$PROJECT_DIRECTORY/app/DiagnosticLogger.swift" \
   "$PROJECT_DIRECTORY/app/CopyableTextView.swift" \
+  "$PROJECT_DIRECTORY/app/VPNSettingsStore.swift" \
+  "$PROJECT_DIRECTORY/app/SettingsWindowController.swift" \
   "$SCRIPT_DIRECTORY/CopyableTextViewTests.swift" \
   -o "$TEST_BINARY"
-"$TEST_BINARY"
+"$TEST_BINARY" "$TEST_DIRECTORY"

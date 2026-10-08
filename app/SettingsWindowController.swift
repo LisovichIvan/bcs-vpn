@@ -29,7 +29,7 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
     private let logSourcePopupButton = NSPopUpButton(frame: .zero, pullsDown: false)
     private let logPathLabel = NSTextField(labelWithString: "")
-    private let logTextView = NSTextView(frame: .zero)
+    private let logTextView = CopyableTextView(frame: .zero)
     private let openLogButton = NSButton(title: "Открыть файл", target: nil, action: nil)
     private let clearLogButton = NSButton(title: "Очистить", target: nil, action: nil)
     private let openLogsFromSettingsButton = NSButton(title: "Журналы…", target: nil, action: nil)
@@ -779,8 +779,10 @@ final class SettingsWindowController: NSWindowController, NSWindowDelegate {
 
         let visibleMaximumY = logTextView.enclosingScrollView?.contentView.bounds.maxY ?? 0
         let distanceToBottom = logTextView.bounds.height - visibleMaximumY
-        let shouldScrollToEnd = forceScrollToEnd || logTextView.string.isEmpty || distanceToBottom < 40
         let previousSelection = logTextView.selectedRange()
+        let shouldScrollToEnd = forceScrollToEnd || (
+            previousSelection.length == 0 && (logTextView.string.isEmpty || distanceToBottom < 40)
+        )
 
         logTextView.string = content
         if shouldScrollToEnd {
