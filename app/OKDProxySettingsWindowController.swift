@@ -9,11 +9,15 @@ final class OKDProxySettingsWindowController: NSWindowController, NSWindowDelega
     private let passwordField = NSSecureTextField(string: "")
     private let namespaceField = NSTextField(string: "")
     private let selectorField = NSTextField(string: "")
-    private let portsField = NSTextField(string: "")
+    private let configurationLoader: OKDProxyConfigurationLoader
+    private let forwardsTextView = CopyableTextView()
+    private let configurationStatusLabel = NSTextField(labelWithString: "")
+    private let refreshButton = NSButton(title: "Обновить пробросы", target: nil, action: nil)
     private let statusLabel = NSTextField(labelWithString: "")
 
-    init(dataDirectory: URL) {
+    init(dataDirectory: URL, configurationLoader: OKDProxyConfigurationLoader = OKDProxyConfigurationLoader()) {
         store = OKDProxySettingsStore(dataDirectory: dataDirectory)
+        self.configurationLoader = configurationLoader
         super.init(window: nil)
         configureWindow()
     }
@@ -26,15 +30,22 @@ final class OKDProxySettingsWindowController: NSWindowController, NSWindowDelega
         showWindow(nil)
         window?.makeKeyAndOrderFront(nil)
         NSApplication.shared.activate(ignoringOtherApps: true)
+        refreshForwards()
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        configurationLoader.cancel()
+        refreshButton.isEnabled = true
     }
 
     private func configureWindow() {
         let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 720, height: 480),
-            styleMask: [.titled, .closable, .miniaturizable],
+            contentRect: NSRect(x: 0, y: 0, width: 960, height: 800),
+            styleMask: [.titled, .closable, .miniaturizable, .resizable],
             backing: .buffered,
             defer: false
         )
+        window.minSize = NSSize(width: 900, height: 760)
         window.title = "BCS VPN — OKD Proxy"
         window.contentView = makeView()
         window.isReleasedWhenClosed = false
@@ -50,7 +61,6 @@ final class OKDProxySettingsWindowController: NSWindowController, NSWindowDelega
         passwordField.placeholderString = "Пароль OKD (необязательно)"
         namespaceField.placeholderString = "crm-common"
         selectorField.placeholderString = "app=crm-db-proxy"
-        portsField.placeholderString = OKDProxySettings.defaultPorts
 
         let form = NSStackView(views: [
             row("Адрес OKD", serverURLField),
@@ -59,15 +69,51 @@ final class OKDProxySettingsWindowController: NSWindowController, NSWindowDelega
             row("Пароль", passwordField),
             row("Namespace", namespaceField),
             row("Selector pod", selectorField),
-            row("Порты", portsField),
         ])
         form.orientation = .vertical
         form.alignment = .leading
         form.spacing = 12
 
-        let hint = NSTextField(wrappingLabelWithString: "OKD Proxy найдёт первый Running pod по selector и будет автоматически перезапускать oc port-forward после его остановки. Token сохраняется в защищённом файле с правами 600.")
+        let hint = NSTextField(wrappingLabelWithString: "Первый Running pod в указанном namespace по selector. Порты загружаются из GitLab при каждом подключении через glab: только TCP, без записей _…, без дублей. При ошибке загрузки подключение не запускается. Учётные данные OKD сохраняются в файле с правами 600.")
         hint.textColor = .secondaryLabelColor
         hint.maximumNumberOfLines = 0
+
+        let sourceLabel = NSTextField(wrappingLabelWithString: "Источник: \(OKDProxyConfiguration.sourceURL)")
+        sourceLabel.isSelectable = true
+        let previewLabel = NSTextField(wrappingLabelWithString: "Просмотр develop, не состояние активного подключения. Локальный адрес → порт pod → назначение из config.json (TCP).")
+        previewLabel.textColor = .secondaryLabelColor
+        refreshButton.target = self
+        refreshButton.action = #selector(refreshForwards)
+        refreshButton.bezelStyle = .rounded
+        let configurationButtons = NSStackView(views: [configurationStatusLabel, NSView(), refreshButton])
+        configurationButtons.orientation = .horizontal
+        configurationButtons.spacing = 12
+        configurationStatusLabel.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        configurationStatusLabel.maximumNumberOfLines = 3
+        refreshButton.setContentHuggingPriority(.required, for: .horizontal)
+
+        forwardsTextView.isEditable = false
+        forwardsTextView.isSelectable = true
+        forwardsTextView.isRichText = false
+        forwardsTextView.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        forwardsTextView.autoresizingMask = [.width]
+        forwardsTextView.isVerticallyResizable = true
+        forwardsTextView.isHorizontallyResizable = false
+        forwardsTextView.textContainer?.widthTracksTextView = true
+        forwardsTextView.textContainer?.containerSize = NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude)
+        forwardsTextView.textContainerInset = NSSize(width: 8, height: 8)
+        let forwardsScrollView = NSScrollView()
+        forwardsScrollView.hasVerticalScroller = true
+        forwardsScrollView.borderType = .bezelBorder
+        forwardsScrollView.documentView = forwardsTextView
+        let configurationView = NSStackView(views: [sourceLabel, previewLabel, configurationButtons, forwardsScrollView])
+        configurationView.orientation = .vertical
+        configurationView.alignment = .leading
+        configurationView.spacing = 8
+        for view in [sourceLabel, previewLabel, configurationButtons, forwardsScrollView] {
+            view.widthAnchor.constraint(equalTo: configurationView.widthAnchor).isActive = true
+        }
+        forwardsScrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 200).isActive = true
 
         let saveButton = NSButton(title: "Сохранить", target: self, action: #selector(save))
         saveButton.bezelStyle = .rounded
@@ -81,7 +127,7 @@ final class OKDProxySettingsWindowController: NSWindowController, NSWindowDelega
         saveButton.setContentHuggingPriority(.required, for: .horizontal)
 
         let content = NSView()
-        [form, hint, buttons].forEach {
+        [form, hint, configurationView, buttons].forEach {
             $0.translatesAutoresizingMaskIntoConstraints = false
             content.addSubview($0)
         }
@@ -92,7 +138,10 @@ final class OKDProxySettingsWindowController: NSWindowController, NSWindowDelega
             hint.topAnchor.constraint(equalTo: form.bottomAnchor, constant: 18),
             hint.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
             hint.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
-            buttons.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 18),
+            configurationView.topAnchor.constraint(equalTo: hint.bottomAnchor, constant: 18),
+            configurationView.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
+            configurationView.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
+            buttons.topAnchor.constraint(equalTo: configurationView.bottomAnchor, constant: 18),
             buttons.leadingAnchor.constraint(equalTo: content.leadingAnchor, constant: 24),
             buttons.trailingAnchor.constraint(equalTo: content.trailingAnchor, constant: -24),
             buttons.bottomAnchor.constraint(equalTo: content.bottomAnchor, constant: -20),
@@ -131,7 +180,26 @@ final class OKDProxySettingsWindowController: NSWindowController, NSWindowDelega
         passwordField.stringValue = settings.password
         namespaceField.stringValue = settings.namespace
         selectorField.stringValue = settings.podSelector
-        portsField.stringValue = settings.ports
+    }
+
+    @objc private func refreshForwards() {
+        refreshButton.isEnabled = false
+        forwardsTextView.string = ""
+        configurationStatusLabel.stringValue = "Загрузка config.json из GitLab…"
+        configurationStatusLabel.textColor = .secondaryLabelColor
+        configurationLoader.load { [weak self] result in
+            guard let self else { return }
+            self.refreshButton.isEnabled = true
+            switch result {
+            case let .success(configuration):
+                self.forwardsTextView.string = configuration.forwards.map(\.description).joined(separator: "\n\n")
+                self.configurationStatusLabel.stringValue = "TCP-сервисов: \(configuration.forwards.count), уникальных портов: \(Set(configuration.forwards.map(\.localPort)).count)."
+                self.configurationStatusLabel.textColor = .secondaryLabelColor
+            case let .failure(error):
+                self.configurationStatusLabel.stringValue = error.localizedDescription
+                self.configurationStatusLabel.textColor = .systemRed
+            }
+        }
     }
 
     @objc private func save() {
@@ -141,8 +209,7 @@ final class OKDProxySettingsWindowController: NSWindowController, NSWindowDelega
             username: usernameField.stringValue,
             password: passwordField.stringValue,
             namespace: namespaceField.stringValue,
-            podSelector: selectorField.stringValue,
-            ports: portsField.stringValue
+            podSelector: selectorField.stringValue
         )
         do {
             apply(try store.save(settings))

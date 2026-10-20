@@ -8,17 +8,13 @@ struct OKDProxySettings: Codable, Equatable {
     let password: String
     let namespace: String
     let podSelector: String
-    let ports: String
-
-    static let defaultPorts = "1424 1427 1428 1429 1430 1431 1432 1433 1434 1435 1436 1437 1438 1439 1440 1441 1442 1445 1446 1447 1449"
     static let empty = OKDProxySettings(
         serverURL: "https://okd.tusvc.bcs.ru:443",
         token: "",
         username: "",
         password: "",
         namespace: "crm-common",
-        podSelector: "app=crm-db-proxy",
-        ports: defaultPorts
+        podSelector: "app=crm-db-proxy"
     )
 
     func validated() throws -> OKDProxySettings {
@@ -28,10 +24,9 @@ struct OKDProxySettings: Codable, Equatable {
             username: username.trimmingCharacters(in: .whitespacesAndNewlines),
             password: password.trimmingCharacters(in: .whitespacesAndNewlines),
             namespace: namespace.trimmingCharacters(in: .whitespacesAndNewlines),
-            podSelector: podSelector.trimmingCharacters(in: .whitespacesAndNewlines),
-            ports: ports.split(whereSeparator: { $0.isWhitespace }).joined(separator: " ")
+            podSelector: podSelector.trimmingCharacters(in: .whitespacesAndNewlines)
         )
-        let requiredValues = [normalized.serverURL, normalized.namespace, normalized.podSelector, normalized.ports]
+        let requiredValues = [normalized.serverURL, normalized.namespace, normalized.podSelector]
         guard requiredValues.allSatisfy({ !$0.isEmpty }) else {
             throw OKDProxySettingsError.invalidSetting("Заполните обязательные поля OKD Proxy.")
         }
@@ -43,7 +38,7 @@ struct OKDProxySettings: Codable, Equatable {
         guard normalized.username.isEmpty == normalized.password.isEmpty else {
             throw OKDProxySettingsError.invalidSetting("Логин и пароль OKD должны быть указаны вместе.")
         }
-        let values = [normalized.serverURL, normalized.token, normalized.username, normalized.password, normalized.namespace, normalized.podSelector, normalized.ports]
+        let values = [normalized.serverURL, normalized.token, normalized.username, normalized.password, normalized.namespace, normalized.podSelector]
         guard values.allSatisfy({ value in
             !value.unicodeScalars.contains(where: { $0.value < 32 || $0.value == 127 })
         }) else {
@@ -67,15 +62,6 @@ struct OKDProxySettings: Codable, Equatable {
         guard normalized.podSelector.range(of: "^[A-Za-z0-9_.=:/,-]+$", options: .regularExpression) != nil else {
             throw OKDProxySettingsError.invalidSetting("Selector pod содержит недопустимые символы.")
         }
-        let portValues = normalized.ports.split(separator: " ")
-        guard !portValues.isEmpty,
-              portValues.count <= 100,
-              portValues.allSatisfy({ value in
-                  guard let port = Int(value) else { return false }
-                  return (1...65535).contains(port)
-              }) else {
-            throw OKDProxySettingsError.invalidSetting("Порты должны быть числами от 1 до 65535.")
-        }
         return normalized
     }
 }
@@ -83,7 +69,7 @@ struct OKDProxySettings: Codable, Equatable {
 // Keep settings files created by older versions readable.
 extension OKDProxySettings {
     private enum CodingKeys: String, CodingKey {
-        case serverURL, token, username, password, namespace, podSelector, ports
+        case serverURL, token, username, password, namespace, podSelector
     }
 
     init(from decoder: Decoder) throws {
@@ -94,8 +80,7 @@ extension OKDProxySettings {
             username: try container.decodeIfPresent(String.self, forKey: .username) ?? "",
             password: try container.decodeIfPresent(String.self, forKey: .password) ?? "",
             namespace: try container.decode(String.self, forKey: .namespace),
-            podSelector: try container.decode(String.self, forKey: .podSelector),
-            ports: try container.decode(String.self, forKey: .ports)
+            podSelector: try container.decode(String.self, forKey: .podSelector)
         )
     }
 }

@@ -192,18 +192,45 @@ security find-certificate -c "Имя владельца сертификата" 
 
 В меню приложения доступны `Настройки OKD Proxy…`, `Подключить OKD Proxy` и
 `Отключить OKD Proxy`. В настройках задаются HTTPS-адрес кластера, token или пара логин/пароль,
-namespace, selector pod и список TCP-портов. Логин и пароль сохраняются и
+namespace и selector pod. Логин и пароль сохраняются и
 используются при следующих подключениях. Модуль через `oc` выбирает первый
 Running pod по selector и пробрасывает порты на `127.0.0.1`. Для современных
 версий `oc` задаётся `--address 127.0.0.1`; старые версии без этого параметра
 используют стандартную привязку к localhost (возможен также `::1`). Статус
 «OKD: подключён» появляется только после сообщений `oc` об открытии всех
-заданных портов на `127.0.0.1`. Если pod или `oc port-forward` завершается,
+загруженных портов на `127.0.0.1`. Если pod или `oc port-forward` завершается,
 статус возвращается к подключению, поиск и проброс запускаются заново.
 Скрипт также отслеживает исходный родительский процесс: при завершении приложения,
 в том числе через LaunchAgent, останавливает `oc` и удаляет временный kubeconfig.
 Остановка отменяет также зависшие проверки CLI и запросы поиска pod, не дожидаясь
 их сетевого завершения.
+
+При каждом подключении приложение через авторизованный GitLab CLI `glab` читает
+[`BCS.CRM.DBProxy/config.json` из ветки `develop`](https://gitlab.gitlab.bcs.ru/bcs-crm/crm-db-proxy/-/blob/develop/BCS.CRM.DBProxy/config.json).
+Используются все записи с `protocol: tcp`, кроме имён с префиксом `_`.
+Пробрасывается `localport` на такой же порт pod; дубли портов удаляются,
+UDP пропускается. При недоступном GitLab, отсутствии авторизации, ошибочном
+или пустом списке пробросов подключение не запускается: прежний ручной список
+не используется. Загрузка ограничена 30 секундами и отменяется при отключении.
+Перезапуски `oc port-forward` внутри одного подключения используют уже загруженный
+список; для получения изменений в GitLab переподключите OKD Proxy.
+
+В настройках показаны источник и цепочки
+`127.0.0.1:localport → pod:localport → forwardIp:forwardPort` с именами сервисов.
+Список загружается при открытии окна и кнопкой `Обновить пробросы`; его можно
+выделить и скопировать. Это просмотр текущей ветки `develop`, а не состояние
+активного подключения. Ручное поле портов удалено; старые файлы настроек читаются,
+но сохранённые в них порты игнорируются.
+
+Дополнительно установите `glab` в `/opt/homebrew/bin`, `/usr/local/bin` или
+`/usr/bin` и авторизуйте его локально:
+
+```bash
+glab auth login --hostname gitlab.gitlab.bcs.ru
+```
+
+Токен GitLab хранится средствами `glab`, отдельно от учётных данных OKD.
+Приложение не запрашивает и не сохраняет его в настройках.
 
 Учётные данные OKD хранятся отдельно в `~/Library/Application Support/BCS VPN/okd-proxy-settings.plist`
 с правами 600. Во время работы token либо логин и пароль передаются `oc` через временный
@@ -392,6 +419,7 @@ Fallback-прокси обслуживает до 512 одновременных
 | `./scripts/test-vpn-session-time.sh` | Проверить серверные лимиты и обратный отсчёт без VPN |
 | `python3 ./scripts/test-portable-ocproxy.py` | Проверить исходный и установленный ocproxy |
 | `python3 ./scripts/test-okd-proxy.py` | Проверить совместимость oc, готовность портов, повторы и остановку, включая завершение родительского процесса, без кластера |
+| `./scripts/test-okd-configuration.sh` | Проверить чтение конфигурации GitLab, отмену, ошибки, запуск и отображение пробросов без сети |
 
 ## Структура проекта
 
@@ -419,6 +447,7 @@ swiftc -warnings-as-errors -typecheck \
   app/main.swift \
   app/VPNSettingsStore.swift \
   app/OKDProxySettings.swift \
+  app/OKDProxyConfiguration.swift \
   app/OKDProxyManager.swift \
   app/OKDProxySettingsWindowController.swift \
   app/SettingsWindowController.swift \
@@ -431,6 +460,7 @@ swiftc -warnings-as-errors -typecheck \
 ./scripts/test-vpn-session-time.sh
 ./scripts/test-copyable-text-view.sh
 python3 ./scripts/test-okd-proxy.py
+./scripts/test-okd-configuration.sh
 ```
 
 Проверка переносимого ocproxy требует предварительно установленного runtime и

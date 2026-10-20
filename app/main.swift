@@ -224,7 +224,13 @@ private final class MenuBarController: NSObject, NSApplicationDelegate {
     @objc private func connectOKD() {
         DiagnosticLogger.info("menu.okd.connect requested")
         do {
-            try okdProxyManager.start()
+            try okdProxyManager.start { [weak self] error in
+                guard let self else { return }
+                self.applyOKDStatus(self.okdProxyManager.status)
+                if let error {
+                    self.showError(title: "Не удалось запустить OKD Proxy", details: error.localizedDescription)
+                }
+            }
             applyOKDStatus(okdProxyManager.status)
         } catch {
             okdProxyManager.stop()
