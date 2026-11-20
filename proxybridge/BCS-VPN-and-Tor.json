@@ -68,7 +68,7 @@
     {
       "name": "BCS through VPN",
       "processNames": "*",
-      "targetHosts": "gitlab.gitlab.bcs.ru;artifactory.gitlab.bcs.ru;confluence.bcs.ru;jira.bcs.ru;apis.tusvc.bcs.ru;*.global.bcs;193.142.56.242;193.142.56.243;193.142.56.247;172.18.8.20;172.17.174.48",
+      "targetHosts": "gitlab.gitlab.bcs.ru;artifactory.gitlab.bcs.ru;confluence.bcs.ru;jira.bcs.ru;apis.tusvc.bcs.ru;*.global.bcs;ef-syspass.tusvc.t-global.bcs;193.142.56.242;193.142.56.243;193.142.56.247;172.18.8.20;172.17.174.48",
       "targetPorts": "*",
       "protocol": "TCP",
       "action": "A749BA8D-ACD5-45FA-BF61-85C3F91454B7",

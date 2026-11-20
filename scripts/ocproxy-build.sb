@@ -1,0 +1,17 @@
+(version 1)
+(deny default)
+(allow process-exec process-fork sysctl-read file-read-metadata)
+(allow file-read*
+    (literal "/")
+    (subpath "/usr")
+    (subpath "/System")
+    (subpath "/Library/Developer/CommandLineTools")
+    (subpath (param "SOURCE_DIRECTORY"))
+    (subpath (param "BUILD_DIRECTORY"))
+    (subpath (param "LIBRARY_DIRECTORY"))
+    (subpath (param "HEADER_DIRECTORY"))
+    (literal "/dev/null")
+    (literal "/dev/urandom"))
+(allow file-write*
+    (subpath (param "BUILD_DIRECTORY"))
+    (literal "/dev/null"))

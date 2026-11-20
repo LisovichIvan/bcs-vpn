@@ -72,8 +72,8 @@ Proxifier -> fallback proxy SOCKS5 127.0.0.1:8889
   fallback-прокси.
 
 Homebrew, Docker, Cisco Secure Client и системные расширения не требуются.
-Python не используется приложением и скриптами подключения; он нужен только
-для тестовых помощников.
+Python не используется приложением и скриптами подключения; он нужен
+для тестовых помощников и необязательной пересборки ocproxy из исходников.
 При сборке runtime встраивается непосредственно в `BCS VPN.app` в
 `Contents/Resources/runtime-macos-arm64`. Приложение и VPN-компоненты
 устанавливаются единым bundle.
@@ -358,6 +358,7 @@ apis.tusvc.bcs.ru
 172.18.8.20
 172.17.174.48
 *.global.bcs
+ef-syspass.tusvc.t-global.bcs
 ```
 
 Прямые правила для `BCS VPN.app` и VPN-шлюза обязательны. Исполняемый файл внутри
@@ -393,6 +394,26 @@ Fallback-прокси обслуживает до 512 одновременных
 - неизменность интерфейсов, маршрутов и DNS macOS;
 - прямой внешний IP Mac.
 
+## Разовый DNS внутри VPN
+
+При подключённом VPN можно получить один IPv4 внутреннего имени:
+
+```bash
+./scripts/resolve-vpn-host.sh ef-syspass.tusvc.t-global.bcs
+```
+
+Команда обращается непосредственно к `127.0.0.1:8890` и использует DNS resolver
+ocproxy, включая его кэш. При успехе stdout содержит только IPv4; при отказе
+сообщение идёт в stderr и код завершения ненулевой. Вся операция ограничена
+15 секундами. Fallback и системный DNS не используются, подключение к целевому
+серверу не открывается. Команда не меняет `/etc/hosts`, ProxyBridge, DNS,
+маршруты или настройки Wi-Fi.
+
+Нужны обновлённые приложение и runtime; после обновления VPN следует
+переподключить. Полученный IP сам по себе не подтверждает HTTPS-сервис:
+перед согласованным добавлением в hosts проверьте TLS с исходным hostname
+и ожидаемую страницу.
+
 ## Остановка
 
 ```bash
@@ -414,10 +435,13 @@ Fallback-прокси обслуживает до 512 одновременных
 | `./scripts/status.sh` | Вывести `connected`, `connecting`, `disconnected`, `failed` или `unavailable` |
 | `./scripts/set-rsa-pin.sh` | Безопасно записать постоянный PIN в локальный Property List |
 | `./scripts/check-vpn.sh [домен]` | Проверить прокси, доступ и сетевую изоляцию |
+| `./scripts/resolve-vpn-host.sh <hostname>` | Получить один IPv4 через DNS внутри подключённого VPN |
 | `./scripts/test-fallback-proxy.sh` | Собрать и проверить fallback SOCKS5 |
-| `./scripts/test-vpn-settings.sh` | Проверить Swift-helper: настройки, identity и сигналы |
+| `./scripts/test-vpn-settings.sh` | Проверить Swift-helper: настройки, DNS, identity и сигналы |
 | `./scripts/test-vpn-session-time.sh` | Проверить серверные лимиты и обратный отсчёт без VPN |
+| `python3 ./scripts/test-proxybridge-profiles.py` | Проверить покрытие sysPass и идентичность копий профилей ProxyBridge без сети |
 | `python3 ./scripts/test-portable-ocproxy.py` | Проверить исходный и установленный ocproxy |
+| `python3 ./scripts/test-ocproxy-resolve.py` | Проверить RESOLVE и CONNECT с имитацией VPN, без корпоративной сети |
 | `python3 ./scripts/test-okd-proxy.py` | Проверить совместимость oc, готовность портов, повторы и остановку, включая завершение родительского процесса, без кластера |
 | `./scripts/test-okd-configuration.sh` | Проверить чтение конфигурации GitLab, отмену, ошибки, запуск и отображение пробросов без сети |
 
@@ -459,6 +483,8 @@ swiftc -warnings-as-errors -typecheck \
 ./scripts/test-vpn-settings.sh
 ./scripts/test-vpn-session-time.sh
 ./scripts/test-copyable-text-view.sh
+python3 ./scripts/test-proxybridge-profiles.py
+python3 ./scripts/test-ocproxy-resolve.py
 python3 ./scripts/test-okd-proxy.py
 ./scripts/test-okd-configuration.sh
 ```

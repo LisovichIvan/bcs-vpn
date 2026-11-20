@@ -8,6 +8,7 @@ private enum VPNCommandHelperError: LocalizedError {
     case invalidInput(String)
     case fileOperationFailed(String)
     case commandFailed(String)
+    case dnsResolutionFailed(String)
     case securityOperationFailed(String, OSStatus)
 
     var errorDescription: String? {
@@ -20,10 +21,145 @@ private enum VPNCommandHelperError: LocalizedError {
             return "Ошибка файла: \(details)"
         case let .commandFailed(command):
             return "Команда \(command) завершилась с ошибкой."
+        case let .dnsResolutionFailed(details):
+            return "DNS через VPN: \(details)"
         case let .securityOperationFailed(operation, status):
             let details = SecCopyErrorMessageString(status, nil) as String? ?? "OSStatus \(status)"
             return "Ошибка Security при операции \(operation): \(details)."
         }
+    }
+}
+
+private struct VPNDNSResolver {
+    private let hostnameBytes: [UInt8]
+
+    init(hostname: String) throws {
+        let normalizedHostname = hostname.hasSuffix(".") ? String(hostname.dropLast()) : hostname
+        let bytes = Array(normalizedHostname.utf8)
+        let labels = bytes.split(separator: 46, omittingEmptySubsequences: false)
+        guard !bytes.isEmpty, bytes.count <= 253, labels.allSatisfy({ label in
+            guard let first = label.first, let last = label.last,
+                  label.count <= 63, Self.isLetterOrDigit(first), Self.isLetterOrDigit(last) else {
+                return false
+            }
+            return label.allSatisfy { Self.isLetterOrDigit($0) || $0 == 45 }
+        }) else {
+            throw VPNCommandHelperError.invalidInput("Укажите корректное ASCII DNS-имя длиной до 253 байт.")
+        }
+        hostnameBytes = bytes
+    }
+
+    func resolve(port: UInt16 = 8890, timeout: TimeInterval = 15) throws -> String {
+        let deadline = ProcessInfo.processInfo.systemUptime + timeout
+        let descriptor = Darwin.socket(AF_INET, SOCK_STREAM, 0)
+        guard descriptor >= 0 else { throw Self.socketError("socket") }
+        defer { Darwin.close(descriptor) }
+
+        let flags = fcntl(descriptor, F_GETFL)
+        var noSIGPIPE: Int32 = 1
+        guard flags >= 0,
+              fcntl(descriptor, F_SETFL, flags | O_NONBLOCK) == 0,
+              fcntl(descriptor, F_SETFD, FD_CLOEXEC) == 0,
+              setsockopt(descriptor, SOL_SOCKET, SO_NOSIGPIPE, &noSIGPIPE,
+                         socklen_t(MemoryLayout<Int32>.size)) == 0 else {
+            throw Self.socketError("настройка сокета")
+        }
+
+        var address = sockaddr_in()
+        address.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+        address.sin_family = sa_family_t(AF_INET)
+        address.sin_port = port.bigEndian
+        address.sin_addr.s_addr = inet_addr("127.0.0.1")
+        let connectionResult = withUnsafePointer(to: &address) { pointer in
+            pointer.withMemoryRebound(to: sockaddr.self, capacity: 1) {
+                Darwin.connect(descriptor, $0, socklen_t(MemoryLayout<sockaddr_in>.size))
+            }
+        }
+        if connectionResult < 0 {
+            guard errno == EINPROGRESS || errno == EINTR else { throw Self.socketError("connect") }
+            try Self.wait(descriptor, event: Int16(POLLOUT), deadline: deadline)
+            var connectionError: Int32 = 0
+            var errorLength = socklen_t(MemoryLayout<Int32>.size)
+            guard getsockopt(descriptor, SOL_SOCKET, SO_ERROR, &connectionError, &errorLength) == 0 else {
+                throw Self.socketError("getsockopt")
+            }
+            guard connectionError == 0 else { throw Self.socketError("connect", code: connectionError) }
+        }
+
+        try Self.send([5, 1, 0], descriptor: descriptor, deadline: deadline)
+        guard try Self.receive(2, descriptor: descriptor, deadline: deadline) == [5, 0] else {
+            throw VPNCommandHelperError.dnsResolutionFailed("некорректный ответ SOCKS5 greeting.")
+        }
+        try Self.send([5, 0xF0, 0, 3, UInt8(hostnameBytes.count)] + hostnameBytes + [0, 0],
+                      descriptor: descriptor, deadline: deadline)
+        let header = try Self.receive(4, descriptor: descriptor, deadline: deadline)
+        guard header[0] == 5, header[2] == 0 else {
+            throw VPNCommandHelperError.dnsResolutionFailed("некорректный заголовок SOCKS5.")
+        }
+        if header[1] == 7 {
+            throw VPNCommandHelperError.dnsResolutionFailed("ocproxy не поддерживает RESOLVE; обновите runtime и переподключитесь.")
+        }
+        guard header[1] == 0 else {
+            throw VPNCommandHelperError.dnsResolutionFailed("разрешение имени не удалось (SOCKS5 REP=\(header[1])).")
+        }
+        guard header[3] == 1 else {
+            throw VPNCommandHelperError.dnsResolutionFailed("ожидался IPv4-ответ.")
+        }
+        let answer = try Self.receive(6, descriptor: descriptor, deadline: deadline)
+        guard answer[4] == 0, answer[5] == 0 else {
+            throw VPNCommandHelperError.dnsResolutionFailed("некорректный порт в DNS-ответе.")
+        }
+        return answer.prefix(4).map(String.init).joined(separator: ".")
+    }
+
+    private static func isLetterOrDigit(_ byte: UInt8) -> Bool {
+        (byte >= 65 && byte <= 90) || (byte >= 97 && byte <= 122) || (byte >= 48 && byte <= 57)
+    }
+
+    private static func socketError(_ operation: String, code: Int32 = errno) -> VPNCommandHelperError {
+        .dnsResolutionFailed("\(operation): \(String(cString: strerror(code))) (\(code)).")
+    }
+
+    private static func wait(_ descriptor: Int32, event: Int16, deadline: TimeInterval) throws {
+        while true {
+            let remaining = deadline - ProcessInfo.processInfo.systemUptime
+            guard remaining > 0 else { throw VPNCommandHelperError.dnsResolutionFailed("таймаут DNS-запроса.") }
+            var descriptorEvent = pollfd(fd: descriptor, events: event, revents: 0)
+            let result = Darwin.poll(&descriptorEvent, 1, Int32(min(ceil(remaining * 1000), Double(Int32.max))))
+            if result < 0 && errno == EINTR { continue }
+            guard result >= 0 else { throw socketError("poll") }
+            guard result > 0 else { throw VPNCommandHelperError.dnsResolutionFailed("таймаут DNS-запроса.") }
+            guard descriptorEvent.revents & Int16(POLLNVAL) == 0 else { throw socketError("poll", code: EBADF) }
+            if descriptorEvent.revents & (event | Int16(POLLERR) | Int16(POLLHUP)) != 0 { return }
+        }
+    }
+
+    private static func send(_ bytes: [UInt8], descriptor: Int32, deadline: TimeInterval) throws {
+        var sentByteCount = 0
+        while sentByteCount < bytes.count {
+            try wait(descriptor, event: Int16(POLLOUT), deadline: deadline)
+            let result = bytes.withUnsafeBytes { buffer in
+                Darwin.write(descriptor, buffer.baseAddress?.advanced(by: sentByteCount), bytes.count - sentByteCount)
+            }
+            if result < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) { continue }
+            guard result > 0 else { throw socketError("write", code: result == 0 ? ECONNRESET : errno) }
+            sentByteCount += result
+        }
+    }
+
+    private static func receive(_ byteCount: Int, descriptor: Int32, deadline: TimeInterval) throws -> [UInt8] {
+        var bytes = [UInt8](repeating: 0, count: byteCount)
+        var receivedByteCount = 0
+        while receivedByteCount < byteCount {
+            try wait(descriptor, event: Int16(POLLIN), deadline: deadline)
+            let result = bytes.withUnsafeMutableBytes { buffer in
+                Darwin.read(descriptor, buffer.baseAddress?.advanced(by: receivedByteCount), byteCount - receivedByteCount)
+            }
+            if result < 0 && (errno == EINTR || errno == EAGAIN || errno == EWOULDBLOCK) { continue }
+            guard result > 0 else { throw socketError("read", code: result == 0 ? ECONNRESET : errno) }
+            receivedByteCount += result
+        }
+        return bytes
     }
 }
 
@@ -44,6 +180,23 @@ private enum VPNCommandHelper {
         }
 
         switch command {
+        case "resolve-host":
+            guard arguments.count == 2 else {
+                throw VPNCommandHelperError.invalidArguments
+            }
+            let address = try VPNDNSResolver(hostname: arguments[1]).resolve()
+            FileHandle.standardOutput.write(Data("\(address)\n".utf8))
+#if VPN_DNS_RESOLVER_TESTS
+        case "resolve-host-test":
+            guard arguments.count == 4, let port = UInt16(arguments[2]), port > 0,
+                  let timeoutMilliseconds = Int(arguments[3]), (1...15000).contains(timeoutMilliseconds) else {
+                throw VPNCommandHelperError.invalidArguments
+            }
+            let address = try VPNDNSResolver(hostname: arguments[1]).resolve(
+                port: port, timeout: Double(timeoutMilliseconds) / 1000
+            )
+            FileHandle.standardOutput.write(Data("\(address)\n".utf8))
+#endif
         case "read-settings":
             guard arguments.count == 2 else {
                 throw VPNCommandHelperError.invalidArguments

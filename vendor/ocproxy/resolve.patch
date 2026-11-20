@@ -1,0 +1,83 @@
+--- a/src/ocproxy.c
++++ b/src/ocproxy.c
+@@ -86,0 +87 @@
++#define SOCKS_CMD_RESOLVE	0xf0
+@@ -109,0 +111 @@
++	int resolve_only;
+@@ -402,0 +405,43 @@
++static int valid_resolve_hostname(const u8_t *hostname, u16_t hostname_length)
++{
++	u16_t position, label_length = 0;
++
++	if (!hostname_length || hostname_length > 253)
++		return 0;
++	for (position = 0; position < hostname_length; position++) {
++		u8_t character = hostname[position];
++
++		if (character == '.') {
++			if (!label_length || hostname[position - 1] == '-')
++				return 0;
++			label_length = 0;
++			continue;
++		}
++		if (!((character >= 'a' && character <= 'z') ||
++		    (character >= 'A' && character <= 'Z') ||
++		    (character >= '0' && character <= '9') ||
++		    (character == '-' && label_length)))
++			return 0;
++		if (++label_length > 63)
++			return 0;
++	}
++	return hostname[hostname_length - 1] != '-';
++}
++
++static void socks_resolve_reply(struct ocp_sock *connection,
++			       const ip_addr_t *resolved_address)
++{
++	u8_t response[10] = { SOCKS_VER, SOCKS_HOST_UNREACHABLE, 0,
++			     SOCKS_ATYP_IPV4, 0, 0, 0, 0, 0, 0 };
++
++	if (resolved_address) {
++		response[1] = SOCKS_OK;
++		memcpy(response + 4, &resolved_address->addr, 4);
++	}
++	/* The DNS callback is complete, so deletion must release the socket. */
++	connection->state = STATE_SOCKS_CMD;
++	if (write(connection->fd, response, sizeof(response)) != sizeof(response))
++		warn("could not write SOCKS DNS response\n");
++	ocp_sock_del(connection);
++}
++
+@@ -443 +488 @@
+-		if (req->cmd != SOCKS_CMD_CONNECT) {
++		if (req->cmd != SOCKS_CMD_CONNECT && req->cmd != SOCKS_CMD_RESOLVE) {
+@@ -444,0 +490,5 @@
++			return;
++		}
++		s->resolve_only = req->cmd == SOCKS_CMD_RESOLVE;
++		if (s->resolve_only && (req->rsv || req->atyp != SOCKS_ATYP_DOMAIN)) {
++			socks_reply(s, SOCKS_ADDRNOTSUPP);
+@@ -456 +506 @@
+-			u16_t namelen = req->u.fqdn.fqdn_len;
++			u16_t namelen;
+@@ -461,2 +511,3 @@
+-			if (s->sock_pos <= (offsetof(struct socks_req,
+-			    u.fqdn.fqdn_len) + req->u.fqdn.fqdn_len))
++			namelen = req->u.fqdn.fqdn_len;
++			if ((size_t)s->sock_pos < offsetof(struct socks_req,
++			    u.fqdn.fqdn_name) + namelen + 2)
+@@ -463,0 +515,4 @@
++			if (s->resolve_only && !valid_resolve_hostname(name, namelen)) {
++				socks_reply(s, SOCKS_ADDRNOTSUPP);
++				return;
++			}
+@@ -521,0 +577,4 @@
++	if (s->resolve_only) {
++		socks_resolve_reply(s, ipaddr);
++		return;
++	}
+@@ -563,0 +623,4 @@
++	if (s->resolve_only) {
++		socks_resolve_reply(s, NULL);
++		return;
++	}

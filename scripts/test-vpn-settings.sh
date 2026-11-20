@@ -21,7 +21,7 @@ swiftc -warnings-as-errors \
   "$PROJECT_DIRECTORY/app/VPNSettingsStore.swift" \
   "$SCRIPT_DIRECTORY/VPNSettingsStoreTests.swift" \
   -o "$SETTINGS_STORE_TEST_BINARY"
-swiftc -warnings-as-errors -D CERTIFICATE_SELECTION_TESTS \
+swiftc -warnings-as-errors -D CERTIFICATE_SELECTION_TESTS -D VPN_DNS_RESOLVER_TESTS \
   "$PROJECT_DIRECTORY/app/VPNSettingsStore.swift" \
   "$PROJECT_DIRECTORY/app/VPNCommandHelper.swift" \
   -o "$VPN_COMMAND_HELPER"
@@ -58,6 +58,7 @@ fi
   cd "$PROJECT_DIRECTORY"
   "$SETTINGS_STORE_TEST_BINARY"
   python3 "$SCRIPT_DIRECTORY/test-certificate-selection.py" "$VPN_COMMAND_HELPER"
+  python3 "$SCRIPT_DIRECTORY/test-vpn-dns.py" "$VPN_COMMAND_HELPER"
   "$SCRIPT_DIRECTORY/test-signal-reset.sh" "$VPN_COMMAND_HELPER"
 )
 
